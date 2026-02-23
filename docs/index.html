@@ -345,6 +345,31 @@
             color: var(--text-muted);
         }
 
+
+        .brew-cmd {
+            margin-top: 12px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-family: 'SF Mono', Monaco, Consolas, monospace;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: fit-content;
+        }
+
+        .brew-cmd code {
+            color: var(--text);
+        }
+
+        .brew-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-top: 8px;
+        }
         /* Responsive */
         @media (max-width: 900px) {
             html, body { overflow: auto; }
@@ -427,6 +452,11 @@
                 <div class="download-info">
                     <span class="version-badge">v1.1.1</span>
                     macOS 12+ | Apple Silicon & Intel | 1.4 MB
+                </div>
+                <div class="brew-label">or via Homebrew:</div>
+                <div class="brew-cmd">
+                    <span>$</span>
+                    <code>brew install knightynite/g9-helper/g9-helper</code>
                 </div>
             </div>
 
