@@ -1474,7 +1474,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "G9 Helper"
         alert.informativeText = """
-            Version 1.1.1
+            Version 1.1.2
 
             Unlock crisp HiDPI scaling on Samsung Odyssey G9 and other large monitors.
 
