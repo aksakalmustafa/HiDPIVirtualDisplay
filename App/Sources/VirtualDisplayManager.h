@@ -67,6 +67,27 @@ NS_ASSUME_NONNULL_BEGIN
 /// Check if a display is virtual
 - (BOOL)isVirtualDisplay:(CGDirectDisplayID)displayID;
 
+/// Read the chromaticity primaries from a physical display's EDID via IOKit.
+/// Returns YES if successful, filling in the out parameters with CIE xy values.
+/// When mirroring, the virtual display should use these exact primaries to avoid
+/// expensive ColorSync color transforms on every frame.
+- (BOOL)getChromaticityForDisplay:(CGDirectDisplayID)displayID
+                          redX:(CGFloat *)redX redY:(CGFloat *)redY
+                        greenX:(CGFloat *)greenX greenY:(CGFloat *)greenY
+                         blueX:(CGFloat *)blueX blueY:(CGFloat *)blueY
+                        whiteX:(CGFloat *)whiteX whiteY:(CGFloat *)whiteY;
+
+/// Create a virtual display matching a target physical display's color profile.
+/// Reads the target display's EDID primaries and uses them for the virtual display
+/// so ColorSync can use an identity transform (no per-frame color conversion).
+- (CGDirectDisplayID)createVirtualDisplayWithWidth:(unsigned int)width
+                                            height:(unsigned int)height
+                                               ppi:(unsigned int)ppi
+                                             hiDPI:(BOOL)hiDPI
+                                              name:(NSString *)name
+                                       refreshRate:(double)refreshRate
+                              matchingDisplay:(CGDirectDisplayID)targetDisplayID;
+
 @end
 
 NS_ASSUME_NONNULL_END

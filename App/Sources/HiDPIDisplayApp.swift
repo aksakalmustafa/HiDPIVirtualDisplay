@@ -1658,16 +1658,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let refreshRate = getDisplayRefreshRate(externalID)
         debugLog("Will create virtual display at \(refreshRate) Hz to match physical monitor")
 
-        // Create virtual display
+        // Create virtual display with color primaries matching the physical display.
+        // This lets ColorSync use an identity transform instead of doing expensive
+        // per-frame color conversion that was causing WindowServer deadlocks.
         let manager = VirtualDisplayManager.shared()
-        debugLog("Calling createVirtualDisplay...")
+        debugLog("Calling createVirtualDisplay (matching display \(externalID))...")
         let virtualID = manager.createVirtualDisplay(
             withWidth: config.width,
             height: config.height,
             ppi: config.ppi,
             hiDPI: config.hiDPI,
             name: config.name,
-            refreshRate: refreshRate
+            refreshRate: refreshRate,
+            matchingDisplay: externalID
         )
         debugLog("createVirtualDisplay returned: \(virtualID)")
 
@@ -1746,13 +1749,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let isBuiltin = CGDisplayIsBuiltin(displayID) != 0
             let vendorID = CGDisplayVendorNumber(displayID)
             let isVirtualDisplay = vendorID == 0x1234  // Our virtual displays use vendor 0x1234
-            let size = CGDisplayScreenSize(displayID)
-
-            debugLog("  Display \(displayID): builtin=\(isBuiltin), vendor=\(vendorID), isVirtual=\(isVirtualDisplay), size=\(size.width)x\(size.height)mm")
 
             // Skip builtin displays and ANY virtual displays (by vendor ID)
             if !isBuiltin && !isVirtualDisplay {
+                // Only call CGDisplayScreenSize on real displays — calling it on
+                // virtual displays triggers expensive ColorSync profile lookups
+                // that can deadlock colorsync.displayservices and freeze WindowServer.
+                let size = CGDisplayScreenSize(displayID)
+                debugLog("  Display \(displayID): builtin=\(isBuiltin), vendor=\(vendorID), size=\(size.width)x\(size.height)mm")
                 candidates.append((id: displayID, size: size))
+            } else {
+                debugLog("  Display \(displayID): builtin=\(isBuiltin), vendor=\(vendorID), isVirtual=\(isVirtualDisplay) — skipped")
             }
         }
 

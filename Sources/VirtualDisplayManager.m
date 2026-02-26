@@ -46,10 +46,13 @@
     descriptor.queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
     descriptor.name = name;
 
-    // Standard Apple display color profile (P3-ish)
-    descriptor.whitePoint = CGPointMake(0.3125, 0.3291);
-    descriptor.redPrimary = CGPointMake(0.6797, 0.3203);
-    descriptor.greenPrimary = CGPointMake(0.2100, 0.7100);
+    // Use exact sRGB IEC 61966-2.1 primaries so ColorSync can match
+    // an existing cached profile instead of generating a custom one.
+    // Custom primaries were causing colorsync.displayservices to deadlock
+    // against colorsyncd, which blocked WindowServer's render threads.
+    descriptor.whitePoint = CGPointMake(0.3127, 0.3290);   // D65
+    descriptor.redPrimary = CGPointMake(0.6400, 0.3300);
+    descriptor.greenPrimary = CGPointMake(0.3000, 0.6000);
     descriptor.bluePrimary = CGPointMake(0.1500, 0.0600);
 
     // Calculate physical size in millimeters from pixels and PPI
@@ -191,7 +194,7 @@
     }
 
     // Apply the configuration
-    err = CGCompleteDisplayConfiguration(configRef, kCGConfigurePermanently);
+    err = CGCompleteDisplayConfiguration(configRef, kCGConfigureForSession);
     if (err != kCGErrorSuccess) {
         NSLog(@"Failed to complete display configuration: %d", err);
         return NO;
@@ -219,7 +222,7 @@
         return NO;
     }
 
-    err = CGCompleteDisplayConfiguration(configRef, kCGConfigurePermanently);
+    err = CGCompleteDisplayConfiguration(configRef, kCGConfigureForSession);
     if (err != kCGErrorSuccess) {
         NSLog(@"Failed to complete display configuration: %d", err);
         return NO;

@@ -40,6 +40,7 @@ swiftc \
     -framework Foundation \
     -framework AppKit \
     -framework CoreGraphics \
+    -framework IOKit \
     -framework SwiftUI \
     -o "${MACOS}/${BUNDLE_NAME}"
 
