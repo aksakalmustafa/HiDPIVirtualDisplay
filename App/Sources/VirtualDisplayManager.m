@@ -167,7 +167,7 @@ static void retainWindowIfNeeded(NSWindow *window) {
         // Use a dedicated serial queue instead of the main queue.
         // Main queue contention between virtual display callbacks and UI/timer
         // work contributed to the WindowServer deadlock.
-        descriptor.queue = dispatch_queue_create("com.hidpi.virtualdisplay.events",
+        descriptor.queue = dispatch_queue_create("com.hidpi.displayhelper.events",
                                                   DISPATCH_QUEUE_SERIAL);
 
         _displayName = [[name copy] retain];
@@ -274,38 +274,6 @@ static void retainWindowIfNeeded(NSWindow *window) {
                                      redPrimary:CGPointMake(0.6400, 0.3300)
                                    greenPrimary:CGPointMake(0.3000, 0.6000)
                                     bluePrimary:CGPointMake(0.1500, 0.0600)];
-}
-
-- (CGDirectDisplayID)createG9VirtualDisplayWithScaledWidth:(unsigned int)scaledWidth
-                                              scaledHeight:(unsigned int)scaledHeight {
-    // Detect refresh rate from the actual external display, not the built-in screen
-    double refreshRate = 60.0;
-    CGDirectDisplayID displayList[32];
-    uint32_t displayCount;
-    if (CGGetOnlineDisplayList(32, displayList, &displayCount) == kCGErrorSuccess) {
-        for (uint32_t i = 0; i < displayCount; i++) {
-            if (!CGDisplayIsBuiltin(displayList[i]) && CGDisplayVendorNumber(displayList[i]) != 0x1234) {
-                CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayList[i]);
-                if (mode) {
-                    double rate = CGDisplayModeGetRefreshRate(mode);
-                    CGDisplayModeRelease(mode);
-                    if (rate > 0) {
-                        refreshRate = rate;
-                        NSLog(@"VDM: Detected external monitor refresh rate: %.0f Hz", rate);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    NSLog(@"VDM: G9 convenience method using refresh rate: %.1f Hz", refreshRate);
-
-    return [self createVirtualDisplayWithWidth:scaledWidth * 2
-                                        height:scaledHeight * 2
-                                           ppi:140
-                                         hiDPI:YES
-                                          name:@"G9 HiDPI Virtual"
-                                   refreshRate:refreshRate];
 }
 
 - (BOOL)mirrorDisplay:(CGDirectDisplayID)sourceDisplayID

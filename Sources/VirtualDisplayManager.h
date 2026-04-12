@@ -26,12 +26,6 @@ NS_ASSUME_NONNULL_BEGIN
                                               name:(NSString *)name
                                        refreshRate:(double)refreshRate;
 
-/// Create a preset virtual display for Samsung G9 57" (7680x2160)
-/// @param scaledResolution The "looks like" resolution (e.g., 3840x1080, 5120x1440)
-/// @return The CGDirectDisplayID of the created display
-- (CGDirectDisplayID)createG9VirtualDisplayWithScaledWidth:(unsigned int)scaledWidth
-                                              scaledHeight:(unsigned int)scaledHeight;
-
 /// Mirror a virtual display to a physical display
 /// @param sourceDisplayID The virtual display ID (mirror source)
 /// @param targetDisplayID The physical display ID (mirror target)

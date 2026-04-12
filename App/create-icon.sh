@@ -1,5 +1,5 @@
 #!/bin/bash
-# Create app icon for G9 Helper - Odyssey-style curved monitor with G
+# Generate app icon assets (see script body for design notes)
 
 set -e
 

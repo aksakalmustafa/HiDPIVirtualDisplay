@@ -1,5 +1,5 @@
 // main.swift
-// HiDPI Virtual Display CLI for Samsung G9 and other monitors
+// Display Helper CLI
 
 import Foundation
 import CoreGraphics
@@ -39,57 +39,8 @@ struct DisplayPreset {
     }
 }
 
-// Samsung G9 57" (7680x2160) presets
-let g9Presets: [DisplayPreset] = [
-    DisplayPreset(
-        name: "g9-native-hidpi",
-        description: "Native 2x HiDPI (looks like 3840x1080)",
-        framebufferWidth: 7680,
-        framebufferHeight: 2160,
-        logicalWidth: 3840,
-        logicalHeight: 1080,
-        ppi: 140
-    ),
-    DisplayPreset(
-        name: "g9-5120x1440",
-        description: "Scaled HiDPI (looks like 5120x1440) - Good balance",
-        framebufferWidth: 10240,
-        framebufferHeight: 2880,
-        logicalWidth: 5120,
-        logicalHeight: 1440,
-        ppi: 140
-    ),
-    DisplayPreset(
-        name: "g9-4800x1350",
-        description: "Scaled HiDPI (looks like 4800x1350)",
-        framebufferWidth: 9600,
-        framebufferHeight: 2700,
-        logicalWidth: 4800,
-        logicalHeight: 1350,
-        ppi: 140
-    ),
-    DisplayPreset(
-        name: "g9-4480x1260",
-        description: "Scaled HiDPI (looks like 4480x1260) - Larger UI",
-        framebufferWidth: 8960,
-        framebufferHeight: 2520,
-        logicalWidth: 4480,
-        logicalHeight: 1260,
-        ppi: 140
-    ),
-    DisplayPreset(
-        name: "g9-3840x1080-lodpi",
-        description: "LoDPI at half resolution (no scaling, sharp)",
-        framebufferWidth: 3840,
-        framebufferHeight: 1080,
-        logicalWidth: 3840,
-        logicalHeight: 1080,
-        ppi: 140
-    )
-]
-
-// Generic presets for other monitors
-let genericPresets: [DisplayPreset] = [
+/// Small built-in examples for testing; prefer `create-custom` for real use.
+let builtinPresets: [DisplayPreset] = [
     DisplayPreset(
         name: "4k-hidpi",
         description: "4K HiDPI (looks like 1920x1080)",
@@ -148,8 +99,8 @@ func detectExternalDisplayRefreshRate() -> Double {
 
 func printUsage() {
     print("""
-    \(colorize("HiDPI Virtual Display Manager", .bold))
-    \(colorize("For Samsung G9 57\" and other monitors", .cyan))
+    \(colorize("Display Helper (CLI)", .bold))
+    \(colorize("Virtual HiDPI displays for external monitors", .cyan))
 
     \(colorize("USAGE:", .yellow))
         hidpi-virtual-display <command> [options]
@@ -166,22 +117,18 @@ func printUsage() {
         \(colorize("keep-alive", .green))               Keep virtual displays alive (run in background)
 
     \(colorize("EXAMPLES:", .yellow))
-        # List displays to find your G9's display ID
         hidpi-virtual-display list
 
-        # Create a virtual display with G9 5120x1440 HiDPI preset
-        hidpi-virtual-display create g9-5120x1440
+        hidpi-virtual-display create 4k-hidpi
 
-        # Mirror the virtual display (ID from create) to your G9
-        hidpi-virtual-display mirror <virtual-id> <g9-id>
+        hidpi-virtual-display mirror <virtual-id> <physical-display-id>
 
-        # Custom: Create 6K virtual for ultrawide
-        hidpi-virtual-display create-custom 6144 1728 140 true "Custom 6K"
+        hidpi-virtual-display create-custom 5120 2880 163 true "Custom"
 
-    \(colorize("G9 57\" PRESETS:", .yellow))
+    \(colorize("EXAMPLE PRESETS:", .yellow))
     """)
 
-    for preset in g9Presets {
+    for preset in builtinPresets {
         let hiDPIStr = preset.isHiDPI ? colorize("[HiDPI]", .green) : colorize("[LoDPI]", .yellow)
         print("        \(colorize(preset.name, .cyan))")
         print("            \(preset.description)")
@@ -238,10 +185,10 @@ func printDisplayList() {
 }
 
 func printPresets() {
-    print(colorize("\nG9 57\" Presets (7680x2160 native):", .bold))
+    print(colorize("\nExample presets (use create-custom for arbitrary sizes):", .bold))
     print(String(repeating: "-", count: 60))
 
-    for preset in g9Presets {
+    for preset in builtinPresets {
         let hiDPIStr = preset.isHiDPI ? colorize("HiDPI", .green) : colorize("LoDPI", .yellow)
         print("\(colorize(preset.name, .cyan))")
         print("    \(preset.description)")
@@ -249,23 +196,10 @@ func printPresets() {
         print("    Logical: \(preset.logicalWidth)x\(preset.logicalHeight) [\(hiDPIStr)]")
         print()
     }
-
-    print(colorize("\nGeneric Presets:", .bold))
-    print(String(repeating: "-", count: 60))
-
-    for preset in genericPresets {
-        let hiDPIStr = preset.isHiDPI ? colorize("HiDPI", .green) : colorize("LoDPI", .yellow)
-        print("\(colorize(preset.name, .cyan))")
-        print("    \(preset.description)")
-        print("    Framebuffer: \(preset.framebufferWidth)x\(preset.framebufferHeight) [\(hiDPIStr)]")
-        print()
-    }
 }
 
 func createFromPreset(_ presetName: String) -> CGDirectDisplayID {
-    let allPresets = g9Presets + genericPresets
-
-    guard let preset = allPresets.first(where: { $0.name == presetName }) else {
+    guard let preset = builtinPresets.first(where: { $0.name == presetName }) else {
         print(colorize("Error: Unknown preset '\(presetName)'", .red))
         print("Use 'presets' command to see available presets")
         return CGDirectDisplayID(kCGNullDirectDisplay)
@@ -298,8 +232,8 @@ func createFromPreset(_ presetName: String) -> CGDirectDisplayID {
         print(colorize("Created virtual display with ID: \(displayID)", .green))
         print("\nNext steps:")
         print("    1. Run: hidpi-virtual-display list")
-        print("    2. Find your G9's display ID")
-        print("    3. Run: hidpi-virtual-display mirror \(displayID) <g9-display-id>")
+        print("    2. Note your physical monitor's display ID")
+        print("    3. Run: hidpi-virtual-display mirror \(displayID) <physical-display-id>")
     }
 
     return displayID
@@ -343,7 +277,7 @@ func mirrorDisplays(source: CGDirectDisplayID, target: CGDirectDisplayID) {
 
     if manager.mirrorDisplay(source, toDisplay: target) {
         print(colorize("Mirror configured successfully!", .green))
-        print("Your G9 should now show the virtual display content with HiDPI scaling.")
+        print("The physical display should now mirror the virtual output with HiDPI scaling.")
     } else {
         print(colorize("Failed to configure mirror!", .red))
     }

@@ -125,54 +125,6 @@
     return displayID;
 }
 
-- (CGDirectDisplayID)createG9VirtualDisplayWithScaledWidth:(unsigned int)scaledWidth
-                                              scaledHeight:(unsigned int)scaledHeight {
-    // Samsung G9 57" specs:
-    // - Physical: 1419.5mm x 406.4mm (approximately)
-    // - Native: 7680x2160
-    // - PPI: ~140
-
-    // For HiDPI, framebuffer = 2x the "looks like" resolution
-    unsigned int framebufferWidth = scaledWidth * 2;
-    unsigned int framebufferHeight = scaledHeight * 2;
-
-    NSLog(@"G9 Virtual Display: 'Looks like' %ux%u, Framebuffer: %ux%u",
-          scaledWidth, scaledHeight, framebufferWidth, framebufferHeight);
-
-    // G9 57" is approximately 140 PPI at native resolution
-    // But we set PPI based on the virtual framebuffer to get correct physical size appearance
-    unsigned int effectivePPI = 140;
-
-    // Detect refresh rate from the actual external display, not the built-in screen
-    double refreshRate = 60.0;
-    CGDirectDisplayID displayList[32];
-    uint32_t displayCount;
-    if (CGGetOnlineDisplayList(32, displayList, &displayCount) == kCGErrorSuccess) {
-        for (uint32_t i = 0; i < displayCount; i++) {
-            if (!CGDisplayIsBuiltin(displayList[i]) && CGDisplayVendorNumber(displayList[i]) != 0x1234) {
-                CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayList[i]);
-                if (mode) {
-                    double rate = CGDisplayModeGetRefreshRate(mode);
-                    CGDisplayModeRelease(mode);
-                    if (rate > 0) {
-                        refreshRate = rate;
-                        NSLog(@"Detected external monitor refresh rate: %.0f Hz", rate);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    NSLog(@"G9 convenience method using refresh rate: %.1f Hz", refreshRate);
-
-    return [self createVirtualDisplayWithWidth:framebufferWidth
-                                        height:framebufferHeight
-                                           ppi:effectivePPI
-                                         hiDPI:YES
-                                          name:@"G9 HiDPI Virtual"
-                                   refreshRate:refreshRate];
-}
-
 - (BOOL)mirrorDisplay:(CGDirectDisplayID)sourceDisplayID
             toDisplay:(CGDirectDisplayID)targetDisplayID {
 

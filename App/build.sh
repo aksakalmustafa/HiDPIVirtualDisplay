@@ -3,7 +3,7 @@
 
 set -e
 
-APP_NAME="G9 Helper"
+APP_NAME="Display Helper"
 BUNDLE_NAME="HiDPIDisplay"
 BUILD_DIR="build"
 APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"
@@ -34,6 +34,7 @@ clang -c -fno-objc-arc -fobjc-arc-exceptions \
 echo "Compiling Swift and linking..."
 swiftc \
     -parse-as-library \
+    -target arm64-apple-macos15.0 \
     ${SWIFT_SOURCES} \
     "${BUILD_DIR}/VirtualDisplayManager.o" \
     -import-objc-header ${BRIDGING_HEADER} \
@@ -42,6 +43,7 @@ swiftc \
     -framework CoreGraphics \
     -framework IOKit \
     -framework SwiftUI \
+    -framework ServiceManagement \
     -o "${MACOS}/${BUNDLE_NAME}"
 
 # Copy Info.plist

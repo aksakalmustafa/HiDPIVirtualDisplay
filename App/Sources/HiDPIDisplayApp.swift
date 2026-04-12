@@ -1,15 +1,38 @@
-// G9 Helper
-// HiDPI scaling utility for Samsung Odyssey G9 and large monitors
+// Display Helper — menu bar utility for HiDPI scaling on large and high-resolution monitors
 // Created by AL in Dallas
 
 import SwiftUI
 import AppKit
 import CoreGraphics
+import ServiceManagement
+
+/// Names and paths from the app bundle (no hardcoded product string in code).
+private enum AppBrand {
+    static var displayName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? "Display Helper"
+    }
+
+    static var versionString: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0.0"
+    }
+
+    private static var executableName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleExecutable") as? String) ?? "HiDPIDisplay"
+    }
+
+    /// Typical install location — used for the launch agent plist `ProgramArguments`.
+    static var installedExecutablePath: String {
+        "/Applications/\(displayName).app/Contents/MacOS/\(executableName)"
+    }
+}
+
+/// Set to `true` to re-enable the "Check for Updates" menu items and background update checks.
+private let updatesEnabled = false
 
 func debugLog(_ message: String) {
     NSLog("HiDPI: %@", message)
     // Also write to a file for easier debugging
-    let logFile = "/tmp/g9helper.log"
+    let logFile = "/tmp/displayhelper.log"
     let timestamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(timestamp)] \(message)\n"
     if let data = line.data(using: .utf8) {
@@ -30,104 +53,44 @@ func debugLog(_ message: String) {
 class LaunchAgentManager {
     static let shared = LaunchAgentManager()
 
-    private let plistName = "com.hidpi.g9helper.plist"
-
-    private var plistPath: String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/Library/LaunchAgents/\(plistName)"
-    }
-
     var isInstalled: Bool {
-        FileManager.default.fileExists(atPath: plistPath)
+        SMAppService.mainApp.status == .enabled
     }
 
-    /// Install the launch agent plist. The plist is written with RunAtLoad
-    /// for next-login startup, but we skip `launchctl load` while the app
-    /// is already running to avoid spawning a duplicate instance.
     func install() -> Bool {
-        // Create LaunchAgents directory if needed
-        let dir = (plistPath as NSString).deletingLastPathComponent
+        // Clean up any legacy LaunchAgent plist from older builds
+        removeLegacyPlistIfPresent()
         do {
-            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try SMAppService.mainApp.register()
+            debugLog("Registered as login item")
+            return true
         } catch {
-            debugLog("Failed to create LaunchAgents directory: \(error)")
+            debugLog("Login item registration failed: \(error)")
             return false
         }
-
-        // Use the installed app's executable path (not the running one, in case we're in a build dir)
-        let execPath = "/Applications/G9 Helper.app/Contents/MacOS/HiDPIDisplay"
-
-        let plistContent = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-            <dict>
-                <key>Label</key>
-                <string>com.hidpi.g9helper</string>
-                <key>ProgramArguments</key>
-                <array>
-                    <string>\(execPath)</string>
-                </array>
-                <key>RunAtLoad</key>
-                <true/>
-                <key>KeepAlive</key>
-                <dict>
-                    <key>SuccessfulExit</key>
-                    <false/>
-                    <key>Crashed</key>
-                    <true/>
-                </dict>
-                <key>ThrottleInterval</key>
-                <integer>5</integer>
-                <key>StandardOutPath</key>
-                <string>/tmp/g9helper.log</string>
-                <key>StandardErrorPath</key>
-                <string>/tmp/g9helper.log</string>
-                <key>ProcessType</key>
-                <string>Interactive</string>
-            </dict>
-            </plist>
-            """
-
-        do {
-            try plistContent.write(toFile: plistPath, atomically: true, encoding: .utf8)
-        } catch {
-            debugLog("Failed to write launch agent plist: \(error)")
-            return false
-        }
-
-        // Don't call `launchctl load` here — RunAtLoad would immediately
-        // spawn a second instance while we're already running. The plist
-        // is in place and launchd will pick it up on next login. The
-        // KeepAlive/Crashed setting will also work after the next reboot.
-        debugLog("Launch agent plist installed (will activate on next login)")
-        return true
     }
 
     func uninstall() -> Bool {
-        // Unload the agent first
-        let unload = Process()
-        unload.launchPath = "/bin/launchctl"
-        unload.arguments = ["unload", plistPath]
+        removeLegacyPlistIfPresent()
         do {
-            try unload.run()
-            unload.waitUntilExit()
-            if unload.terminationStatus != 0 {
-                debugLog("launchctl unload returned status \(unload.terminationStatus)")
-                // Agent might not be loaded (e.g., fresh install before reboot) — continue with file removal
-            }
-        } catch {
-            debugLog("launchctl unload failed to run: \(error)")
-        }
-
-        // Remove the plist file
-        do {
-            try FileManager.default.removeItem(atPath: plistPath)
-            debugLog("Launch agent uninstalled")
+            try SMAppService.mainApp.unregister()
+            debugLog("Unregistered login item")
             return true
         } catch {
-            debugLog("Failed to remove launch agent plist: \(error)")
+            debugLog("Login item unregistration failed: \(error)")
             return false
+        }
+    }
+
+    private func removeLegacyPlistIfPresent() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = "\(home)/Library/LaunchAgents/com.hidpi.displayhelper.launchagent.plist"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            debugLog("Removed legacy launch agent plist")
+        } catch {
+            debugLog("Failed to remove legacy plist: \(error)")
         }
     }
 }
@@ -333,7 +296,7 @@ class StatusWindowController {
         self.progressIndicator = progress
 
         // Title label
-        let titleLabel = NSTextField(labelWithString: "G9 Helper")
+        let titleLabel = NSTextField(labelWithString: AppBrand.displayName)
         titleLabel.frame = NSRect(x: 110, y: 60, width: 160, height: 24)
         titleLabel.font = NSFont.boldSystemFont(ofSize: 14)
         titleLabel.textColor = NSColor.labelColor
@@ -361,7 +324,7 @@ class StatusWindowController {
 class UpdateChecker {
     static let shared = UpdateChecker()
 
-    private let repoOwner = "knightynite"
+    private let repoOwner = "aksakalmustafa"
     private let repoName = "HiDPIVirtualDisplay"
     private let currentVersion: String
     private let kLastUpdateCheckKey = "lastUpdateCheck"
@@ -504,7 +467,7 @@ class UpdateChecker {
     private func showUpdateAlert(release: GitHubRelease, latestVersion: String) {
         let alert = NSAlert()
         alert.messageText = "Update Available"
-        alert.informativeText = "G9 Helper \(latestVersion) is available (you have \(currentVersion)).\n\n\(release.name ?? "")\n\nWould you like to download it?"
+        alert.informativeText = "\(AppBrand.displayName) \(latestVersion) is available (you have \(currentVersion)).\n\n\(release.name ?? "")\n\nWould you like to download it?"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Download")
         alert.addButton(withTitle: "Later")
@@ -525,7 +488,7 @@ class UpdateChecker {
     private func showUpToDateAlert() {
         let alert = NSAlert()
         alert.messageText = "You're Up to Date"
-        alert.informativeText = "G9 Helper \(currentVersion) is the latest version."
+        alert.informativeText = "\(AppBrand.displayName) \(currentVersion) is the latest version."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
@@ -602,7 +565,7 @@ class UpdateChecker {
     private func showInstallInstructions() {
         let alert = NSAlert()
         alert.messageText = "Update Downloaded"
-        alert.informativeText = "The update has been downloaded and opened.\n\n1. Drag the new G9 Helper to Applications\n2. Replace the existing version\n3. Relaunch G9 Helper"
+        alert.informativeText = "The update has been downloaded and opened.\n\n1. Drag the new \(AppBrand.displayName) to Applications\n2. Replace the existing version\n3. Relaunch \(AppBrand.displayName)"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
@@ -634,6 +597,78 @@ struct GitHubAsset: Codable {
     }
 }
 
+// MARK: - Mirrored display cursor workaround (macOS compositor refresh)
+
+/// Apple Silicon + mirrored virtual displays can leave the cursor laggy or stuck; macOS may skip
+/// redraws for power saving. Same class of fix as [BetterDisplay #807](https://github.com/waydabber/BetterDisplay/issues/807#issuecomment-2590505321):
+/// an almost-invisible 1×1 window toggling periodically to force light compositor activity.
+private final class WorkaroundPixelWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class MirroredCursorRefreshWorkaround {
+    private var window: NSWindow?
+    private var timer: Timer?
+    private var colorToggle = false
+
+    func start() {
+        DispatchQueue.main.async { [weak self] in
+            self?.startOnMainThread()
+        }
+    }
+
+    private func startOnMainThread() {
+        stop()
+        let w = WorkaroundPixelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        w.level = .statusBar
+        w.alphaValue = 0.01
+        w.backgroundColor = .black
+        w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        w.ignoresMouseEvents = true
+        w.isOpaque = false
+        w.hasShadow = false
+        w.isReleasedWhenClosed = false
+        reposition(w)
+        w.orderFrontRegardless()
+        window = w
+
+        let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            guard let self, let win = self.window else { return }
+            self.colorToggle.toggle()
+            win.backgroundColor = self.colorToggle ? .white : .black
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+        debugLog("Cursor mirror workaround active (~30 Hz)")
+    }
+
+    private func reposition(_ w: NSWindow) {
+        let screen = NSScreen.screens.max(by: { $0.frame.width < $1.frame.width }) ?? NSScreen.main
+        guard let s = screen else { return }
+        let vf = s.visibleFrame
+        w.setFrameOrigin(NSPoint(x: vf.minX, y: vf.minY))
+    }
+
+    /// Call after display layout changes so the pixel stays on the active desktop.
+    func refreshPositionIfNeeded() {
+        guard let w = window else { return }
+        reposition(w)
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        window?.close()
+        window = nil
+    }
+}
+
 @main
 struct HiDPIDisplayApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -660,6 +695,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let kRefreshRateKey = "customRefreshRate"  // 0.0 = auto-detect
     private let kBoundMonitorVendorKey = "boundMonitorVendor"
     private let kBoundMonitorModelKey = "boundMonitorModel"
+    private let kCursorMirrorWorkaroundKey = "cursorMirrorWorkaroundEnabled"
+
+    private let cursorMirrorWorkaround = MirroredCursorRefreshWorkaround()
 
     // Track if we're waiting for monitor reconnection
     private var wasDisconnected = false
@@ -681,6 +719,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var displayCheckTimer: Timer?
     private var wakeObserver: Any?
 
+    /// Default on: mitigates stuck/laggy cursor with mirrored virtual displays on Apple Silicon.
+    private func cursorMirrorWorkaroundIsOn() -> Bool {
+        if UserDefaults.standard.object(forKey: kCursorMirrorWorkaroundKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: kCursorMirrorWorkaroundKey)
+    }
+
+    private func updateCursorMirrorWorkaroundState() {
+        if isActive && cursorMirrorWorkaroundIsOn() {
+            cursorMirrorWorkaround.start()
+        } else {
+            cursorMirrorWorkaround.stop()
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         debugLog("App launched")
 
@@ -691,7 +745,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "display", accessibilityDescription: "HiDPI Display")
+            if #available(macOS 11.0, *),
+               let img = NSImage(systemSymbolName: "display", accessibilityDescription: AppBrand.displayName) {
+                let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+                button.image = img.withSymbolConfiguration(config)
+            } else {
+                button.title = "HiDPI"
+            }
         }
 
         // Restore wasDisconnected state from UserDefaults (persists across restart)
@@ -727,7 +787,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         startDisplayChangeMonitoring()
 
         // Check for updates in background
-        UpdateChecker.shared.checkForUpdatesInBackground()
+        if updatesEnabled {
+            UpdateChecker.shared.checkForUpdatesInBackground()
+        }
     }
 
     func startDisplayChangeMonitoring() {
@@ -738,6 +800,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             debugLog(">>> Display change notification received")
+            self?.cursorMirrorWorkaround.refreshPositionIfNeeded()
             self?.handleDisplayConfigurationChange()
         }
 
@@ -1036,7 +1099,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
-    private let cleanupMarkerPath = "/tmp/g9helper-cleanup-marker"
+    private let cleanupMarkerPath = "/tmp/displayhelper-cleanup-marker"
 
     /// Check if this launch is a cleanup restart (prevent infinite restart loops)
     func isCleanupRestart() -> Bool {
@@ -1076,6 +1139,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // DO NOT clear saved preset - we want to restore it when monitor reconnects
         debugLog("HiDPI disabled (preset preserved for reconnection)")
+        setHiDPIMirrorActiveFlag(false)
+        updateCursorMirrorWorkaroundState()
     }
 
     func moveAllWindowsToMainDisplay() {
@@ -1156,28 +1221,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(false, forKey: kWasCrashKey)
     }
 
-    // Map old preset names to new ones for backwards compatibility
-    func migratePresetName(_ oldName: String) -> String {
-        let migrations: [String: String] = [
-            "g9-native-hidpi": "g9-57-3840x1080",
-            "g9-5120x1440": "g9-57-5120x1440",
-            "g9-4800x1350": "g9-57-4800x1350",
-            "g9-4480x1260": "g9-57-4389x1234",  // closest match
-            "g9-49-native": "g9-49-2560x720",
-            "g9-49-3840x1080": "g9-49-3840x1080",  // same
-            "uw34-2560x1080": "uw34-2293x960",  // closest match
-            "4k-native": "4k-1920x1080",
-            "4k-2560x1440": "4k-2560x1440",  // same
-        ]
-        return migrations[oldName] ?? oldName
-    }
-
     func restorePreset(_ presetName: String) {
-        let migratedName = migratePresetName(presetName)
         let config: PresetConfig
 
-        if let standard = presetConfigs[migratedName] {
-            config = standard
+        if let dyn = PresetConfig(dynamicPresetKey: presetName) {
+            config = dyn
+        } else if let native = PresetConfig(native1xPresetKey: presetName) {
+            config = native
         } else if presetName.hasPrefix("custom-"),
                   let dict = UserDefaults.standard.dictionary(forKey: "customPresetConfig"),
                   let name = dict["name"] as? String,
@@ -1189,14 +1239,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                   let hiDPI = dict["hiDPI"] as? Bool {
             config = PresetConfig(name: name, width: width, height: height, logicalWidth: logicalWidth, logicalHeight: logicalHeight, ppi: ppi, hiDPI: hiDPI)
         } else {
-            debugLog("ERROR: Unknown preset for restore: \(presetName) (migrated: \(migratedName))")
+            debugLog("ERROR: Unknown preset for restore: \(presetName). Choose a scale from the menu again.")
             return
-        }
-
-        // Update saved preset to new name if migrated
-        if migratedName != presetName {
-            debugLog("Migrated preset name: \(presetName) -> \(migratedName)")
-            saveCurrentPreset(migratedName)
         }
 
         debugLog(">>> Auto-restoring preset: \(presetName)")
@@ -1260,11 +1304,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         debugLog("Stale state cleanup complete")
     }
 
+    /// Writes a flag to a shared UserDefaults suite readable by Shortcuts / scripts.
+    /// Key: `com.hidpi.displayhelper.mirrorActive`
+    /// Use this in a Shortcuts automation: "When display helper mirror changes → toggle Focus"
+    private func setHiDPIMirrorActiveFlag(_ active: Bool) {
+        let suite = UserDefaults(suiteName: "com.hidpi.displayhelper") ?? UserDefaults.standard
+        suite.set(active, forKey: "mirrorActive")
+        suite.synchronize()
+        debugLog("HiDPI mirror flag: \(active)")
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         debugLog("App terminating - cleaning up...")
 
         // Stop monitoring
         stopDisplayChangeMonitoring()
+
+        setHiDPIMirrorActiveFlag(false)
 
         // Move windows to main display before cleanup
         if isActive {
@@ -1321,75 +1377,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(NSMenuItem.separator())
         }
 
-        // Samsung G9 57" (7680x2160) presets - ordered by scale factor (smaller = more space)
-        let g9Menu = NSMenu()
-        addPresetItem(to: g9Menu, preset: "g9-57-6144x1728", title: "6144×1728 (1.25x) - More Space")
-        addPresetItem(to: g9Menu, preset: "g9-57-5908x1662", title: "5908×1662 (1.3x)")
-        addPresetItem(to: g9Menu, preset: "g9-57-5632x1584", title: "5632×1584 (1.36x)")
-        addPresetItem(to: g9Menu, preset: "g9-57-5486x1543", title: "5486×1543 (1.4x)")
-        addPresetItem(to: g9Menu, preset: "g9-57-5297x1490", title: "5297×1490 (1.45x)")
-        addPresetItem(to: g9Menu, preset: "g9-57-5120x1440", title: "5120×1440 (1.5x) ★ Recommended")
-        addPresetItem(to: g9Menu, preset: "g9-57-4800x1350", title: "4800×1350 (1.6x)")
-        addPresetItem(to: g9Menu, preset: "g9-57-4389x1234", title: "4389×1234 (1.75x)")
-        addPresetItem(to: g9Menu, preset: "g9-57-3840x1080", title: "3840×1080 (2.0x) - Larger Text")
-        addCustomScaleItem(to: g9Menu, nativeWidth: 7680, nativeHeight: 2160, ppi: 140)
-
-        let g9Item = NSMenuItem(title: "Samsung G9 57\"", action: nil, keyEquivalent: "")
-        g9Item.submenu = g9Menu
-        menu.addItem(g9Item)
-
-        // Samsung G9 49" (5120x1440) presets
-        let g49Menu = NSMenu()
-        addPresetItem(to: g49Menu, preset: "g9-49-4096x1152", title: "4096×1152 (1.25x) - More Space")
-        addPresetItem(to: g49Menu, preset: "g9-49-3938x1108", title: "3938×1108 (1.3x)")
-        addPresetItem(to: g49Menu, preset: "g9-49-3840x1080", title: "3840×1080 (1.33x) ★ Recommended")
-        addPresetItem(to: g49Menu, preset: "g9-49-3413x960", title: "3413×960 (1.5x)")
-        addPresetItem(to: g49Menu, preset: "g9-49-2926x823", title: "2926×823 (1.75x)")
-        addPresetItem(to: g49Menu, preset: "g9-49-2560x720", title: "2560×720 (2.0x) - Larger Text")
-        addCustomScaleItem(to: g49Menu, nativeWidth: 5120, nativeHeight: 1440, ppi: 109)
-
-        let g49Item = NSMenuItem(title: "Samsung G9 49\"", action: nil, keyEquivalent: "")
-        g49Item.submenu = g49Menu
-        menu.addItem(g49Item)
-
-        // 34" Ultrawide (3440x1440) presets
-        let uwMenu = NSMenu()
-        addPresetItem(to: uwMenu, preset: "uw34-2752x1152", title: "2752×1152 (1.25x) - More Space")
-        addPresetItem(to: uwMenu, preset: "uw34-2646x1108", title: "2646×1108 (1.3x)")
-        addPresetItem(to: uwMenu, preset: "uw34-2293x960", title: "2293×960 (1.5x) ★ Recommended")
-        addPresetItem(to: uwMenu, preset: "uw34-1966x823", title: "1966×823 (1.75x)")
-        addPresetItem(to: uwMenu, preset: "uw34-1720x720", title: "1720×720 (2.0x) - Larger Text")
-        addCustomScaleItem(to: uwMenu, nativeWidth: 3440, nativeHeight: 1440, ppi: 110)
-
-        let uwItem = NSMenuItem(title: "34\" Ultrawide (3440×1440)", action: nil, keyEquivalent: "")
-        uwItem.submenu = uwMenu
-        menu.addItem(uwItem)
-
-        // 38" Ultrawide (3840x1600) presets
-        let uw38Menu = NSMenu()
-        addPresetItem(to: uw38Menu, preset: "uw38-3072x1280", title: "3072×1280 (1.25x) - More Space")
-        addPresetItem(to: uw38Menu, preset: "uw38-2954x1231", title: "2954×1231 (1.3x)")
-        addPresetItem(to: uw38Menu, preset: "uw38-2560x1067", title: "2560×1067 (1.5x) ★ Recommended")
-        addPresetItem(to: uw38Menu, preset: "uw38-2194x914", title: "2194×914 (1.75x)")
-        addPresetItem(to: uw38Menu, preset: "uw38-1920x800", title: "1920×800 (2.0x) - Larger Text")
-        addCustomScaleItem(to: uw38Menu, nativeWidth: 3840, nativeHeight: 1600, ppi: 110)
-
-        let uw38Item = NSMenuItem(title: "38\" Ultrawide (3840×1600)", action: nil, keyEquivalent: "")
-        uw38Item.submenu = uw38Menu
-        menu.addItem(uw38Item)
-
-        // 4K (3840x2160) presets
-        let k4Menu = NSMenu()
-        addPresetItem(to: k4Menu, preset: "4k-3072x1728", title: "3072×1728 (1.25x) - More Space")
-        addPresetItem(to: k4Menu, preset: "4k-2954x1662", title: "2954×1662 (1.3x)")
-        addPresetItem(to: k4Menu, preset: "4k-2560x1440", title: "2560×1440 (1.5x) ★ Recommended")
-        addPresetItem(to: k4Menu, preset: "4k-2194x1234", title: "2194×1234 (1.75x)")
-        addPresetItem(to: k4Menu, preset: "4k-1920x1080", title: "1920×1080 (2.0x) - Larger Text")
-        addCustomScaleItem(to: k4Menu, nativeWidth: 3840, nativeHeight: 2160, ppi: 163)
-
-        let k4Item = NSMenuItem(title: "4K Displays (3840×2160)", action: nil, keyEquivalent: "")
-        k4Item.submenu = k4Menu
-        menu.addItem(k4Item)
+        appendDynamicHiDPIMenuItems(to: menu)
 
         // Show cleanup option if orphaned virtual displays exist
         if hasOrphanedVirtualDisplay() {
@@ -1419,10 +1407,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         autoRestoreItem.state = UserDefaults.standard.bool(forKey: kAutoRestoreKey) ? .on : .off
         settingsMenu.addItem(autoRestoreItem)
 
-        let autoUpdateItem = NSMenuItem(title: "Check for Updates Automatically", action: #selector(toggleAutoUpdate(_:)), keyEquivalent: "")
-        autoUpdateItem.target = self
-        autoUpdateItem.state = UpdateChecker.shared.autoCheckEnabled ? .on : .off
-        settingsMenu.addItem(autoUpdateItem)
+        let cursorWorkaroundItem = NSMenuItem(title: "Cursor Lag Workaround (Mirrored Screen)", action: #selector(toggleCursorMirrorWorkaround(_:)), keyEquivalent: "")
+        cursorWorkaroundItem.target = self
+        cursorWorkaroundItem.state = cursorMirrorWorkaroundIsOn() ? .on : .off
+        settingsMenu.addItem(cursorWorkaroundItem)
+
+        if updatesEnabled {
+            let autoUpdateItem = NSMenuItem(title: "Check for Updates Automatically", action: #selector(toggleAutoUpdate(_:)), keyEquivalent: "")
+            autoUpdateItem.target = self
+            autoUpdateItem.state = UpdateChecker.shared.autoCheckEnabled ? .on : .off
+            settingsMenu.addItem(autoUpdateItem)
+        }
 
         settingsMenu.addItem(NSMenuItem.separator())
 
@@ -1454,11 +1449,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let checkUpdateItem = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdates), keyEquivalent: "")
-        checkUpdateItem.target = self
-        menu.addItem(checkUpdateItem)
+        if updatesEnabled {
+            let checkUpdateItem = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdates), keyEquivalent: "")
+            checkUpdateItem.target = self
+            menu.addItem(checkUpdateItem)
+        }
 
-        let aboutItem = NSMenuItem(title: "About G9 Helper", action: #selector(showAbout), keyEquivalent: "")
+        let aboutItem = NSMenuItem(title: "About \(AppBrand.displayName)", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
 
@@ -1467,6 +1464,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem?.menu = menu
+        updateCursorMirrorWorkaroundState()
     }
 
     @objc func toggleStartAtLogin(_ sender: NSMenuItem) {
@@ -1483,7 +1481,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !success {
             let alert = NSAlert()
             alert.messageText = wasInstalled ? "Could Not Disable Start at Login" : "Could Not Enable Start at Login"
-            alert.informativeText = "Make sure G9 Helper.app is installed in /Applications and try again."
+            alert.informativeText = "Make sure \(AppBrand.displayName).app is installed in /Applications and try again."
             alert.alertStyle = .warning
             alert.addButton(withTitle: "OK")
             alert.runModal()
@@ -1501,6 +1499,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let current = UserDefaults.standard.bool(forKey: kAutoRestoreKey)
         UserDefaults.standard.set(!current, forKey: kAutoRestoreKey)
         debugLog("Auto-restore after crash: \(!current)")
+        rebuildMenu()
+    }
+
+    @objc func toggleCursorMirrorWorkaround(_ sender: NSMenuItem) {
+        let newValue = !cursorMirrorWorkaroundIsOn()
+        UserDefaults.standard.set(newValue, forKey: kCursorMirrorWorkaroundKey)
+        debugLog("Cursor mirror workaround: \(newValue)")
         rebuildMenu()
     }
 
@@ -1523,11 +1528,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showAbout() {
         let alert = NSAlert()
-        alert.messageText = "G9 Helper"
+        alert.messageText = AppBrand.displayName
         alert.informativeText = """
-            Version 1.1.5
+            Version \(AppBrand.versionString)
 
-            Unlock crisp HiDPI scaling on Samsung Odyssey G9 and other large monitors.
+            Unlocks crisp HiDPI scaling on external displays when macOS does not offer it.
 
             Created by AL in Dallas
             """
@@ -1549,6 +1554,122 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         item.target = self
         item.representedObject = ["width": nativeWidth, "height": nativeHeight, "ppi": ppi] as [String: UInt32]
         menu.addItem(item)
+    }
+
+    /// Largest pixel mode for this display (typical panel native / max resolution).
+    private func maxPixelMode(for displayID: CGDirectDisplayID) -> (UInt32, UInt32)? {
+        guard let modes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode] else { return nil }
+        var bestArea: Int64 = 0
+        var bestW: Int32 = 0
+        var bestH: Int32 = 0
+        for mode in modes {
+            let w = Int32(mode.pixelWidth)
+            let h = Int32(mode.pixelHeight)
+            let area = Int64(w) * Int64(h)
+            if area > bestArea {
+                bestArea = area
+                bestW = w
+                bestH = h
+            }
+        }
+        guard bestArea > 0 else { return nil }
+        return (UInt32(bestW), UInt32(bestH))
+    }
+
+    /// PPI for the virtual display: prefer EDID physical size from the real panel.
+    private func estimatedPPI(for displayID: CGDirectDisplayID, nativeWidth: UInt32, nativeHeight: UInt32) -> UInt32 {
+        let size = CGDisplayScreenSize(displayID)
+        if size.width > 1 && size.height > 1 {
+            let wIn = Double(size.width) / 25.4
+            let hIn = Double(size.height) / 25.4
+            guard wIn > 0.1 && hIn > 0.1 else { return fallbackPPI(nativeWidth: nativeWidth, nativeHeight: nativeHeight) }
+            let ppiW = Double(nativeWidth) / wIn
+            let ppiH = Double(nativeHeight) / hIn
+            let ppi = (ppiW + ppiH) / 2.0
+            return UInt32(min(240, max(96, ppi.rounded())))
+        }
+        return fallbackPPI(nativeWidth: nativeWidth, nativeHeight: nativeHeight)
+    }
+
+    private func fallbackPPI(nativeWidth: UInt32, nativeHeight: UInt32) -> UInt32 {
+        let mx = max(nativeWidth, nativeHeight)
+        let mn = min(nativeWidth, nativeHeight)
+        if mx >= 7000 { return 140 }
+        if mx >= 5000 && mn >= 2000 { return 118 }
+        if mx >= 5000 { return 109 }
+        if mx >= 3800 && mn >= 2000 { return 163 }
+        if mx >= 3800 { return 110 }
+        return 110
+    }
+
+    /// HiDPI logical resolutions = panel max pixels ÷ scale; one block for the connected monitor only.
+    private func appendDynamicHiDPIMenuItems(to menu: NSMenu) {
+        guard let displayID = findRealPhysicalMonitor() else {
+            let note = NSMenuItem(title: "Connect an external display to see HiDPI scale options", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            menu.addItem(note)
+            return
+        }
+
+        let nw: UInt32
+        let nh: UInt32
+        if let m = maxPixelMode(for: displayID) {
+            (nw, nh) = m
+        } else if let mode = CGDisplayCopyDisplayMode(displayID) {
+            nw = UInt32(mode.pixelWidth)
+            nh = UInt32(mode.pixelHeight)
+            debugLog("Using current display mode as panel size: \(nw)×\(nh)")
+        } else {
+            let note = NSMenuItem(title: "Could not read the panel’s resolution", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            menu.addItem(note)
+            return
+        }
+
+        guard nw > 0, nh > 0 else {
+            let note = NSMenuItem(title: "Could not read the panel’s resolution", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            menu.addItem(note)
+            return
+        }
+
+        let ppi = estimatedPPI(for: displayID, nativeWidth: nw, nativeHeight: nh)
+        let hint = NSMenuItem(title: "Panel max: \(nw) × \(nh)", action: nil, keyEquivalent: "")
+        hint.isEnabled = false
+        menu.addItem(hint)
+
+        // 1× entry — native panel resolution, no HiDPI scaling
+        let native1xKey = PresetConfig.native1xPresetKey(width: nw, height: nh, ppi: ppi)
+        addPresetItem(to: menu, preset: native1xKey, title: "\(nw)×\(nh) (1×)")
+
+        let scales: [Double] = [1.25, 1.30, 4.0 / 3.0, 1.36, 1.40, 1.45, 1.50, 1.60, 1.75, 2.00]
+
+        // Framebuffer widths (= logical * 2) that macOS Sequoia/Sonoma classify as AirPlay /
+        // presentation targets, triggering "What do you want to show on…" and auto-enabling
+        // Do Not Disturb for the session. Nudge the logical width by +1 so the framebuffer
+        // misses these thresholds while keeping the scale step in the menu.
+        let airPlayFramebufferWidths: Set<UInt32> = [7680, 8192]
+
+        var seenLogical = Set<UInt64>()
+        for scale in scales {
+            var lw = UInt32(Double(nw) / scale)
+            let lh = UInt32(Double(nh) / scale)
+            if lw < 640 || lh < 480 { continue }
+            // If framebuffer width would hit an AirPlay magic number, nudge by +1 logical pixel
+            // (= +2 framebuffer pixels) to avoid the presentation-mode classification.
+            if airPlayFramebufferWidths.contains(lw * 2) { lw += 1 }
+            let key = (UInt64(lw) << 32) | UInt64(lh)
+            if seenLogical.contains(key) { continue }
+            seenLogical.insert(key)
+
+            let roundedScale = (scale * 1000).rounded() / 1000
+            let title = "\(lw)×\(lh) (\(String(format: "%.2f", roundedScale))×)"
+
+            let presetKey = PresetConfig.dynamicPresetKey(logicalWidth: lw, logicalHeight: lh, ppi: ppi)
+            addPresetItem(to: menu, preset: presetKey, title: title)
+        }
+
+        addCustomScaleItem(to: menu, nativeWidth: nw, nativeHeight: nh, ppi: ppi)
     }
 
     @objc func showCustomScale(_ sender: NSMenuItem) {
@@ -1607,7 +1728,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // User manually applying — reset failure counter for fresh attempt
         UserDefaults.standard.set(0, forKey: kMirrorFailureCountKey)
 
-        guard let config = presetConfigs[presetName] else {
+        guard let config = PresetConfig(dynamicPresetKey: presetName)
+                        ?? PresetConfig(native1xPresetKey: presetName) else {
             debugLog("ERROR: Unknown preset \(presetName)")
             return
         }
@@ -1671,6 +1793,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.set(false, forKey: kWasDisconnectedKey)
 
         debugLog("HiDPI disabled (preset cleared)")
+        setHiDPIMirrorActiveFlag(false)
+        updateCursorMirrorWorkaroundState()
     }
 
     /// Get the refresh rate for the virtual display.
@@ -1769,6 +1893,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             targetExternalDisplayID = externalID  // Track target for disconnect detection
             UserDefaults.standard.set(0, forKey: kMirrorFailureCountKey)  // Reset failure counter
             saveMonitorFingerprint(externalID)
+            setHiDPIMirrorActiveFlag(true)
             StatusWindowController.shared.updateStatus("HiDPI enabled: \(config.logicalWidth)x\(config.logicalHeight)")
             debugLog(">>> HiDPI setup complete, monitoring for disconnect")
 
@@ -1854,6 +1979,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             StatusWindowController.shared.updateStatus("\(config.logicalWidth)x\(config.logicalHeight) active (not HiDPI — \(actualScale)x scale)")
         }
 
+        cursorMirrorWorkaround.refreshPositionIfNeeded()
         rebuildMenu()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
@@ -1891,9 +2017,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Prefer displays with large physical size (real monitors vs virtual)
-        // G9 57" is about 1400mm wide, G9 49" is about 1200mm wide
-        // Sort by width descending to prefer larger displays
+        // Prefer displays with large physical size (real monitors vs virtual).
+        // Sort by width descending to prefer larger displays.
         candidates.sort { $0.size.width > $1.size.width }
 
         if let best = candidates.first {
@@ -1946,6 +2071,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isActive = false
         currentPresetName = ""
         currentVirtualID = 0
+        updateCursorMirrorWorkaroundState()
 
         // Keep kLastPresetKey — user wants to clean phantoms, not lose their preset.
         // checkAndRestoreFromCrash() will re-apply it after the restart.
@@ -2003,45 +2129,50 @@ struct PresetConfig {
     let hiDPI: Bool
 }
 
-let presetConfigs: [String: PresetConfig] = [
-    // Samsung G9 57" (7680x2160 native) - Fractional scaling options
-    // Scale factor = native / logical, e.g., 7680/5120 = 1.5x
-    "g9-57-6144x1728": PresetConfig(name: "G9-57-6144", width: 12288, height: 3456, logicalWidth: 6144, logicalHeight: 1728, ppi: 140, hiDPI: true),  // 1.25x
-    "g9-57-5908x1662": PresetConfig(name: "G9-57-5908", width: 11816, height: 3324, logicalWidth: 5908, logicalHeight: 1662, ppi: 140, hiDPI: true),  // 1.3x
-    "g9-57-5632x1584": PresetConfig(name: "G9-57-5632", width: 11264, height: 3168, logicalWidth: 5632, logicalHeight: 1584, ppi: 140, hiDPI: true),  // 1.36x
-    "g9-57-5486x1543": PresetConfig(name: "G9-57-5486", width: 10972, height: 3086, logicalWidth: 5486, logicalHeight: 1543, ppi: 140, hiDPI: true),  // 1.4x
-    "g9-57-5297x1490": PresetConfig(name: "G9-57-5297", width: 10594, height: 2980, logicalWidth: 5297, logicalHeight: 1490, ppi: 140, hiDPI: true),  // 1.45x
-    "g9-57-5120x1440": PresetConfig(name: "G9-57-5120", width: 10240, height: 2880, logicalWidth: 5120, logicalHeight: 1440, ppi: 140, hiDPI: true),  // 1.5x (recommended)
-    "g9-57-4800x1350": PresetConfig(name: "G9-57-4800", width: 9600, height: 2700, logicalWidth: 4800, logicalHeight: 1350, ppi: 140, hiDPI: true),   // 1.6x
-    "g9-57-4389x1234": PresetConfig(name: "G9-57-4389", width: 8778, height: 2468, logicalWidth: 4389, logicalHeight: 1234, ppi: 140, hiDPI: true),   // 1.75x
-    "g9-57-3840x1080": PresetConfig(name: "G9-57-3840", width: 7680, height: 2160, logicalWidth: 3840, logicalHeight: 1080, ppi: 140, hiDPI: true),   // 2.0x (native HiDPI)
+extension PresetConfig {
+    /// HiDPI scaled entry: `dyn:<logicalW>:<logicalH>:<ppi>` — framebuffer = logical × 2
+    static func dynamicPresetKey(logicalWidth: UInt32, logicalHeight: UInt32, ppi: UInt32) -> String {
+        "dyn:\(logicalWidth):\(logicalHeight):\(ppi)"
+    }
 
-    // Samsung G9 49" (5120x1440 native) - Fractional scaling options
-    "g9-49-4096x1152": PresetConfig(name: "G9-49-4096", width: 8192, height: 2304, logicalWidth: 4096, logicalHeight: 1152, ppi: 109, hiDPI: true),   // 1.25x
-    "g9-49-3938x1108": PresetConfig(name: "G9-49-3938", width: 7876, height: 2216, logicalWidth: 3938, logicalHeight: 1108, ppi: 109, hiDPI: true),   // 1.3x
-    "g9-49-3840x1080": PresetConfig(name: "G9-49-3840", width: 7680, height: 2160, logicalWidth: 3840, logicalHeight: 1080, ppi: 109, hiDPI: true),   // 1.33x
-    "g9-49-3413x960": PresetConfig(name: "G9-49-3413", width: 6826, height: 1920, logicalWidth: 3413, logicalHeight: 960, ppi: 109, hiDPI: true),     // 1.5x (recommended)
-    "g9-49-2926x823": PresetConfig(name: "G9-49-2926", width: 5852, height: 1646, logicalWidth: 2926, logicalHeight: 823, ppi: 109, hiDPI: true),     // 1.75x
-    "g9-49-2560x720": PresetConfig(name: "G9-49-2560", width: 5120, height: 1440, logicalWidth: 2560, logicalHeight: 720, ppi: 109, hiDPI: true),     // 2.0x (native HiDPI)
+    init?(dynamicPresetKey key: String) {
+        guard key.hasPrefix("dyn:") else { return nil }
+        let rest = String(key.dropFirst(4))
+        let parts = rest.split(separator: ":")
+        guard parts.count == 3,
+              let lw = UInt32(parts[0]), let lh = UInt32(parts[1]), let ppi = UInt32(parts[2]),
+              lw > 0, lh > 0, ppi > 0 else { return nil }
+        self.init(
+            name: "Virtual Screen",
+            width: lw * 2,
+            height: lh * 2,
+            logicalWidth: lw,
+            logicalHeight: lh,
+            ppi: ppi,
+            hiDPI: true
+        )
+    }
 
-    // 34" Ultrawide (3440x1440 native) - Fractional scaling options
-    "uw34-2752x1152": PresetConfig(name: "UW34-2752", width: 5504, height: 2304, logicalWidth: 2752, logicalHeight: 1152, ppi: 110, hiDPI: true),     // 1.25x
-    "uw34-2646x1108": PresetConfig(name: "UW34-2646", width: 5292, height: 2216, logicalWidth: 2646, logicalHeight: 1108, ppi: 110, hiDPI: true),     // 1.3x
-    "uw34-2293x960": PresetConfig(name: "UW34-2293", width: 4586, height: 1920, logicalWidth: 2293, logicalHeight: 960, ppi: 110, hiDPI: true),       // 1.5x (recommended)
-    "uw34-1966x823": PresetConfig(name: "UW34-1966", width: 3932, height: 1646, logicalWidth: 1966, logicalHeight: 823, ppi: 110, hiDPI: true),       // 1.75x
-    "uw34-1720x720": PresetConfig(name: "UW34-1720", width: 3440, height: 1440, logicalWidth: 1720, logicalHeight: 720, ppi: 110, hiDPI: true),       // 2.0x (native HiDPI)
+    /// 1× native entry: `dyn1x:<w>:<h>:<ppi>` — framebuffer = logical (no 2× scaling)
+    static func native1xPresetKey(width: UInt32, height: UInt32, ppi: UInt32) -> String {
+        "dyn1x:\(width):\(height):\(ppi)"
+    }
 
-    // 38" Ultrawide (3840x1600 native) - Fractional scaling options
-    "uw38-3072x1280": PresetConfig(name: "UW38-3072", width: 6144, height: 2560, logicalWidth: 3072, logicalHeight: 1280, ppi: 110, hiDPI: true),     // 1.25x
-    "uw38-2954x1231": PresetConfig(name: "UW38-2954", width: 5908, height: 2462, logicalWidth: 2954, logicalHeight: 1231, ppi: 110, hiDPI: true),     // 1.3x
-    "uw38-2560x1067": PresetConfig(name: "UW38-2560", width: 5120, height: 2134, logicalWidth: 2560, logicalHeight: 1067, ppi: 110, hiDPI: true),     // 1.5x (recommended)
-    "uw38-2194x914": PresetConfig(name: "UW38-2194", width: 4388, height: 1828, logicalWidth: 2194, logicalHeight: 914, ppi: 110, hiDPI: true),       // 1.75x
-    "uw38-1920x800": PresetConfig(name: "UW38-1920", width: 3840, height: 1600, logicalWidth: 1920, logicalHeight: 800, ppi: 110, hiDPI: true),       // 2.0x (native HiDPI)
-
-    // 4K (3840x2160 native) - Fractional scaling options
-    "4k-3072x1728": PresetConfig(name: "4K-3072", width: 6144, height: 3456, logicalWidth: 3072, logicalHeight: 1728, ppi: 163, hiDPI: true),         // 1.25x
-    "4k-2954x1662": PresetConfig(name: "4K-2954", width: 5908, height: 3324, logicalWidth: 2954, logicalHeight: 1662, ppi: 163, hiDPI: true),         // 1.3x
-    "4k-2560x1440": PresetConfig(name: "4K-2560", width: 5120, height: 2880, logicalWidth: 2560, logicalHeight: 1440, ppi: 163, hiDPI: true),         // 1.5x (recommended)
-    "4k-2194x1234": PresetConfig(name: "4K-2194", width: 4388, height: 2468, logicalWidth: 2194, logicalHeight: 1234, ppi: 163, hiDPI: true),         // 1.75x
-    "4k-1920x1080": PresetConfig(name: "4K-1920", width: 3840, height: 2160, logicalWidth: 1920, logicalHeight: 1080, ppi: 163, hiDPI: true),         // 2.0x (native HiDPI)
-]
+    init?(native1xPresetKey key: String) {
+        guard key.hasPrefix("dyn1x:") else { return nil }
+        let rest = String(key.dropFirst(6))
+        let parts = rest.split(separator: ":")
+        guard parts.count == 3,
+              let w = UInt32(parts[0]), let h = UInt32(parts[1]), let ppi = UInt32(parts[2]),
+              w > 0, h > 0, ppi > 0 else { return nil }
+        self.init(
+            name: "Virtual Screen",
+            width: w,
+            height: h,
+            logicalWidth: w,
+            logicalHeight: h,
+            ppi: ppi,
+            hiDPI: false
+        )
+    }
+}
