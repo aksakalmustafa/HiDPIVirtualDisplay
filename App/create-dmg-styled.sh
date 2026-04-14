@@ -3,8 +3,8 @@
 
 set -e
 
-APP_NAME="Display Helper"
-DMG_NAME="Display.Helper"
+APP_NAME="HiDPI Display"
+DMG_NAME="HiDPI.Display"
 BUILD_DIR="build"
 DMG_TEMP="${BUILD_DIR}/dmg_temp"
 DMG_FINAL="${BUILD_DIR}/${DMG_NAME}.dmg"
@@ -28,11 +28,11 @@ ln -s /Applications "${DMG_TEMP}/Applications"
 # Create instructions file
 cat > "${DMG_TEMP}/INSTALL.txt" << 'EOF'
 ===============================================
-  Display Helper — Installation
+  HiDPI Display — Installation
 ===============================================
 
 STEP 1: INSTALL
-  Drag "Display Helper.app" to the "Applications" folder
+  Drag "HiDPI Display.app" to the "Applications" folder
 
 STEP 2: FIRST LAUNCH (Security Warning)
   macOS will show a security warning because this
@@ -41,7 +41,7 @@ STEP 2: FIRST LAUNCH (Security Warning)
   To open the app, use ONE of these methods:
 
   METHOD A (Easiest):
-    1. Right-click on "Display Helper" in Applications
+    1. Right-click on "HiDPI Display" in Applications
     2. Select "Open" from the menu
     3. Click "Open" in the dialog that appears
 
@@ -49,7 +49,7 @@ STEP 2: FIRST LAUNCH (Security Warning)
     1. Open System Settings
     2. Go to Privacy & Security
     3. Scroll down to Security section
-    4. Click "Open Anyway" next to Display Helper
+    4. Click "Open Anyway" next to HiDPI Display
 
 STEP 3: USE
   1. Look for the display icon in your menu bar

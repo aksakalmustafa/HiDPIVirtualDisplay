@@ -3,8 +3,8 @@
 
 set -e
 
-APP_NAME="Display Helper"
-DMG_NAME="Display.Helper"
+APP_NAME="HiDPI Display"
+DMG_NAME="HiDPI.Display"
 BUILD_DIR="build"
 DMG_DIR="${BUILD_DIR}/dmg"
 VERSION="1.1.4"
@@ -26,13 +26,13 @@ ln -s /Applications "${DMG_DIR}/Applications"
 
 # Create README
 cat > "${DMG_DIR}/README.txt" << 'EOF'
-Display Helper — Free Software
+HiDPI Display — Free Software
 
 Unlock crisp HiDPI (Retina) scaling on external displays when
 macOS does not offer it natively.
 
 INSTALLATION
-1. Drag "Display Helper.app" to the Applications folder
+1. Drag "HiDPI Display.app" to the Applications folder
 2. Launch from Applications or Spotlight
 3. Look for the display icon in your menu bar
 

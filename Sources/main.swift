@@ -1,5 +1,5 @@
 // main.swift
-// Display Helper CLI
+// HiDPI Display CLI
 
 import Foundation
 import CoreGraphics
@@ -99,7 +99,7 @@ func detectExternalDisplayRefreshRate() -> Double {
 
 func printUsage() {
     print("""
-    \(colorize("Display Helper (CLI)", .bold))
+    \(colorize("HiDPI Display (CLI)", .bold))
     \(colorize("Virtual HiDPI displays for external monitors", .cyan))
 
     \(colorize("USAGE:", .yellow))

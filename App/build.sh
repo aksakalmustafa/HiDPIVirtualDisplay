@@ -3,7 +3,7 @@
 
 set -e
 
-APP_NAME="Display Helper"
+APP_NAME="HiDPI Display"
 BUNDLE_NAME="HiDPIDisplay"
 BUILD_DIR="build"
 APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"

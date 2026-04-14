@@ -1,11 +1,11 @@
-# Display Helper
+# HiDPI Display
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/Platform-macOS%2015%2B-lightgrey.svg)](https://www.apple.com/macos/)
 
 Menu bar app that gets you HiDPI (Retina) rendering on large external monitors that macOS won't give it to natively.
 
-macOS gates HiDPI on pixel density, so big monitors don't qualify — you're stuck with either tiny native-res text or blurry scaled rendering. Display Helper works around this by creating a virtual display with the HiDPI flag set, then mirroring it to your physical monitor. macOS renders at 2x into the virtual framebuffer, and you get sharp text at whatever effective resolution you pick.
+macOS gates HiDPI on pixel density, so big monitors don't qualify — you're stuck with either tiny native-res text or blurry scaled rendering. HiDPI Display works around this by creating a virtual display with the HiDPI flag set, then mirroring it to your physical monitor. macOS renders at 2x into the virtual framebuffer, and you get sharp text at whatever effective resolution you pick.
 
 ## Install
 
@@ -15,7 +15,7 @@ macOS gates HiDPI on pixel density, so big monitors don't qualify — you're stu
 git clone https://github.com/aksakalmustafa/HiDPIVirtualDisplay.git
 cd HiDPIVirtualDisplay/App
 ./build.sh
-cp -r "build/Display Helper.app" /Applications/
+cp -r "build/HiDPI Display.app" /Applications/
 ```
 
 macOS will probably block it on first launch — right-click the app, hit "Open", confirm in the dialog.
@@ -34,7 +34,7 @@ Every monitor submenu has a **Custom Scale...** option — opens a slider for an
 
 ## Monitor-aware auto-apply
 
-When you apply a preset, Display Helper remembers which monitor was connected (by vendor and model ID). Auto-apply on reconnect, crash recovery, and wake-from-sleep will only activate if the same monitor is plugged in. If you switch to a different display, the app stays idle instead of applying the wrong configuration. Manually applying a preset on a new monitor updates the binding.
+When you apply a preset, HiDPI Display remembers which monitor was connected (by vendor and model ID). Auto-apply on reconnect, crash recovery, and wake-from-sleep will only activate if the same monitor is plugged in. If you switch to a different display, the app stays idle instead of applying the wrong configuration. Manually applying a preset on a new monitor updates the binding.
 
 ## Auto-start & crash recovery
 

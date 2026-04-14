@@ -1,4 +1,4 @@
-// Display Helper — menu bar utility for HiDPI scaling on large and high-resolution monitors
+// HiDPI Display — menu bar utility for HiDPI scaling on large and high-resolution monitors
 // Created by AL in Dallas
 
 import SwiftUI
@@ -9,7 +9,7 @@ import ServiceManagement
 /// Names and paths from the app bundle (no hardcoded product string in code).
 private enum AppBrand {
     static var displayName: String {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? "Display Helper"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? "HiDPI Display"
     }
 
     static var versionString: String {
@@ -32,7 +32,7 @@ private let updatesEnabled = false
 func debugLog(_ message: String) {
     NSLog("HiDPI: %@", message)
     // Also write to a file for easier debugging
-    let logFile = "/tmp/displayhelper.log"
+    let logFile = "/tmp/hidpi-display.log"
     let timestamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(timestamp)] \(message)\n"
     if let data = line.data(using: .utf8) {
@@ -1113,7 +1113,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
-    private let cleanupMarkerPath = "/tmp/displayhelper-cleanup-marker"
+    private let cleanupMarkerPath = "/tmp/hidpi-display-cleanup-marker"
 
     /// Check if this launch is a cleanup restart (prevent infinite restart loops)
     func isCleanupRestart() -> Bool {
@@ -1337,7 +1337,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Writes a flag to a shared UserDefaults suite readable by Shortcuts / scripts.
     /// Key: `com.hidpi.displayhelper.mirrorActive`
-    /// Use this in a Shortcuts automation: "When display helper mirror changes → toggle Focus"
+    /// Use this in a Shortcuts automation: "When HiDPI Display mirror changes → toggle Focus"
     private func setHiDPIMirrorActiveFlag(_ active: Bool) {
         let suite = UserDefaults(suiteName: "com.hidpi.displayhelper") ?? UserDefaults.standard
         suite.set(active, forKey: "mirrorActive")

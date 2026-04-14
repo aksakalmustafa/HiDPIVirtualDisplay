@@ -167,7 +167,7 @@ static void retainWindowIfNeeded(NSWindow *window) {
         // Use a dedicated serial queue instead of the main queue.
         // Main queue contention between virtual display callbacks and UI/timer
         // work contributed to the WindowServer deadlock.
-        descriptor.queue = dispatch_queue_create("com.hidpi.displayhelper.events",
+        descriptor.queue = dispatch_queue_create("com.hidpi.hidpidisplay.events",
                                                   DISPATCH_QUEUE_SERIAL);
 
         _displayName = [[name copy] retain];
