@@ -26,10 +26,7 @@ Click the display icon in your menu bar, pick your monitor, pick a resolution. T
 
 ### Resolution options
 
-The menu builds resolution options dynamically based on your monitor's actual panel resolution. For each connected display you get:
-
-- **1× Panel Max** — native framebuffer, no HiDPI scaling, every pixel is a real pixel
-- **Scale steps from 1.25× to 2.0×** — HiDPI mode, macOS renders at 2x and scales down, giving sharp text at the chosen logical resolution
+The menu builds HiDPI resolution options dynamically based on your monitor's actual panel resolution (scaled logical sizes derived from the panel’s native pixel dimensions).
 
 ### Custom scale
 

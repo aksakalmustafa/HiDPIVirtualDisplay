@@ -1005,11 +1005,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Find a real physical monitor (not built-in, not virtual, not a ghost/phantom display)
+    /// External monitor used for menu resolutions, mirroring, and monitor fingerprinting.
+    /// When several externals are connected, picks the one with the largest physical width (mm)
+    /// so the same display is used everywhere (avoids mismatch with `findExternalDisplay`).
     func findRealPhysicalMonitor(verbose: Bool = false) -> CGDirectDisplayID? {
         var displayList = [CGDirectDisplayID](repeating: 0, count: 32)
         var displayCount: UInt32 = 0
         CGGetOnlineDisplayList(32, &displayList, &displayCount)
+
+        if verbose {
+            debugLog("findRealPhysicalMonitor: found \(displayCount) displays")
+        }
+
+        var candidates: [(id: CGDirectDisplayID, widthMm: CGFloat)] = []
 
         for i in 0..<Int(displayCount) {
             let displayID = displayList[i]
@@ -1026,25 +1034,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let isGhostDisplay = vendorID == 0x756E6B6E
 
             if verbose {
-                // CGDisplayScreenSize on virtual displays kicks off ColorSync lookups that peg the CPU
                 if !isVirtualDisplay {
                     let size = CGDisplayScreenSize(displayID)
-                    debugLog("  Display \(displayID): builtin=\(isBuiltin), vendor=\(vendorID), virtual=\(isVirtualDisplay), ghost=\(isGhostDisplay), size=\(size.width)mm")
+                    debugLog("  Display \(displayID): builtin=\(isBuiltin), vendor=\(vendorID), virtual=\(isVirtualDisplay), ghost=\(isGhostDisplay), size=\(size.width)x\(size.height)mm")
                 } else {
-                    debugLog("  Display \(displayID): builtin=\(isBuiltin), vendor=\(vendorID), virtual=\(isVirtualDisplay), size=skipped")
+                    debugLog("  Display \(displayID): builtin=\(isBuiltin), vendor=\(vendorID), isVirtual=\(isVirtualDisplay) — skipped")
                 }
             }
 
-            // Real monitors are: not built-in, not virtual (0x1234), not ghost (0x756E6B6E "unkn")
             if !isBuiltin && !isVirtualDisplay && !isGhostDisplay {
-                if verbose {
-                    debugLog("Found real physical monitor: \(displayID) (vendor: \(vendorID))")
-                }
-                return displayID
+                let size = CGDisplayScreenSize(displayID)
+                candidates.append((id: displayID, widthMm: size.width))
             }
         }
+
+        candidates.sort { $0.widthMm > $1.widthMm }
+
+        if let best = candidates.first {
+            if verbose {
+                debugLog("  -> Selected external display: \(best.id) (\(best.widthMm)mm wide)")
+            }
+            return best.id
+        }
+
         if verbose {
-            debugLog("No real physical monitor found")
+            debugLog("  -> No external display found")
         }
         return nil
     }
@@ -1224,10 +1238,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func restorePreset(_ presetName: String) {
         let config: PresetConfig
 
+        if presetName.hasPrefix("dyn1x:") {
+            debugLog("Clearing legacy non-HiDPI preset; pick a scaled resolution from the menu.")
+            clearSavedPreset()
+            return
+        }
+
         if let dyn = PresetConfig(dynamicPresetKey: presetName) {
             config = dyn
-        } else if let native = PresetConfig(native1xPresetKey: presetName) {
-            config = native
         } else if presetName.hasPrefix("custom-"),
                   let dict = UserDefaults.standard.dictionary(forKey: "customPresetConfig"),
                   let name = dict["name"] as? String,
@@ -1237,7 +1255,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                   let logicalHeight = (dict["logicalHeight"] as? NSNumber)?.uint32Value,
                   let ppi = (dict["ppi"] as? NSNumber)?.uint32Value,
                   let hiDPI = dict["hiDPI"] as? Bool {
-            config = PresetConfig(name: name, width: width, height: height, logicalWidth: logicalWidth, logicalHeight: logicalHeight, ppi: ppi, hiDPI: hiDPI)
+            if hiDPI {
+                config = PresetConfig(name: name, width: width, height: height, logicalWidth: logicalWidth, logicalHeight: logicalHeight, ppi: ppi, hiDPI: true)
+            } else {
+                // Legacy 1× custom: framebuffer was native-sized; upgrade to HiDPI virtual framebuffer.
+                config = PresetConfig(
+                    name: name,
+                    width: logicalWidth * 2,
+                    height: logicalHeight * 2,
+                    logicalWidth: logicalWidth,
+                    logicalHeight: logicalHeight,
+                    ppi: ppi,
+                    hiDPI: true
+                )
+            }
         } else {
             debugLog("ERROR: Unknown preset for restore: \(presetName). Choose a scale from the menu again.")
             return
@@ -1638,26 +1669,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hint.isEnabled = false
         menu.addItem(hint)
 
-        // 1× entry — native panel resolution, no HiDPI scaling
-        let native1xKey = PresetConfig.native1xPresetKey(width: nw, height: nh, ppi: ppi)
-        addPresetItem(to: menu, preset: native1xKey, title: "\(nw)×\(nh) (1×)")
-
-        let scales: [Double] = [1.25, 1.30, 4.0 / 3.0, 1.36, 1.40, 1.45, 1.50, 1.60, 1.75, 2.00]
-
-        // Framebuffer widths (= logical * 2) that macOS Sequoia/Sonoma classify as AirPlay /
-        // presentation targets, triggering "What do you want to show on…" and auto-enabling
-        // Do Not Disturb for the session. Nudge the logical width by +1 so the framebuffer
-        // misses these thresholds while keeping the scale step in the menu.
-        let airPlayFramebufferWidths: Set<UInt32> = [7680, 8192]
+        // Intentionally not 4/3: exact 3840 logical → 7680px framebuffer triggers macOS
+        // AirPlay / presentation-style mirroring; 1.3328 lands ~3841 wide and avoids that.
+        let scales: [Double] = [1.25, 1.30, 1.3328, 1.35, 1.40, 1.45, 1.50]
 
         var seenLogical = Set<UInt64>()
         for scale in scales {
-            var lw = UInt32(Double(nw) / scale)
+            let lw = UInt32(Double(nw) / scale)
             let lh = UInt32(Double(nh) / scale)
             if lw < 640 || lh < 480 { continue }
-            // If framebuffer width would hit an AirPlay magic number, nudge by +1 logical pixel
-            // (= +2 framebuffer pixels) to avoid the presentation-mode classification.
-            if airPlayFramebufferWidths.contains(lw * 2) { lw += 1 }
+
             let key = (UInt64(lw) << 32) | UInt64(lh)
             if seenLogical.contains(key) { continue }
             seenLogical.insert(key)
@@ -1728,8 +1749,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // User manually applying — reset failure counter for fresh attempt
         UserDefaults.standard.set(0, forKey: kMirrorFailureCountKey)
 
-        guard let config = PresetConfig(dynamicPresetKey: presetName)
-                        ?? PresetConfig(native1xPresetKey: presetName) else {
+        guard let config = PresetConfig(dynamicPresetKey: presetName) else {
             debugLog("ERROR: Unknown preset \(presetName)")
             return
         }
@@ -1988,46 +2008,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func findExternalDisplay() -> CGDirectDisplayID? {
-        var displayList = [CGDirectDisplayID](repeating: 0, count: 32)
-        var displayCount: UInt32 = 0
-        CGGetOnlineDisplayList(32, &displayList, &displayCount)
-
-        debugLog("findExternalDisplay: found \(displayCount) displays, currentVirtualID=\(currentVirtualID)")
-
-        // Collect candidate displays with their physical sizes
-        var candidates: [(id: CGDirectDisplayID, size: CGSize)] = []
-
-        for i in 0..<Int(displayCount) {
-            let displayID = displayList[i]
-            let isBuiltin = CGDisplayIsBuiltin(displayID) != 0
-            let vendorID = CGDisplayVendorNumber(displayID)
-            let isVirtualDisplay = vendorID == 0x1234  // Our virtual displays use vendor 0x1234
-            let isGhostDisplay = vendorID == 0x756E6B6E  // "unkn" — phantom display without EDID
-
-            // Skip builtin, virtual, and ghost/phantom displays
-            if !isBuiltin && !isVirtualDisplay && !isGhostDisplay {
-                // Only call CGDisplayScreenSize on real displays — calling it on
-                // virtual displays triggers expensive ColorSync profile lookups
-                // that can deadlock colorsync.displayservices and freeze WindowServer.
-                let size = CGDisplayScreenSize(displayID)
-                debugLog("  Display \(displayID): builtin=\(isBuiltin), vendor=\(vendorID), size=\(size.width)x\(size.height)mm")
-                candidates.append((id: displayID, size: size))
-            } else {
-                debugLog("  Display \(displayID): builtin=\(isBuiltin), vendor=\(vendorID), isVirtual=\(isVirtualDisplay) — skipped")
-            }
-        }
-
-        // Prefer displays with large physical size (real monitors vs virtual).
-        // Sort by width descending to prefer larger displays.
-        candidates.sort { $0.size.width > $1.size.width }
-
-        if let best = candidates.first {
-            debugLog("  -> Selected external display: \(best.id) (\(best.size.width)mm wide)")
-            return best.id
-        }
-
-        debugLog("  -> No external display found")
-        return nil
+        debugLog("findExternalDisplay: currentVirtualID=\(currentVirtualID)")
+        return findRealPhysicalMonitor(verbose: true)
     }
 
     func saveMonitorFingerprint(_ displayID: CGDirectDisplayID) {
@@ -2150,29 +2132,6 @@ extension PresetConfig {
             logicalHeight: lh,
             ppi: ppi,
             hiDPI: true
-        )
-    }
-
-    /// 1× native entry: `dyn1x:<w>:<h>:<ppi>` — framebuffer = logical (no 2× scaling)
-    static func native1xPresetKey(width: UInt32, height: UInt32, ppi: UInt32) -> String {
-        "dyn1x:\(width):\(height):\(ppi)"
-    }
-
-    init?(native1xPresetKey key: String) {
-        guard key.hasPrefix("dyn1x:") else { return nil }
-        let rest = String(key.dropFirst(6))
-        let parts = rest.split(separator: ":")
-        guard parts.count == 3,
-              let w = UInt32(parts[0]), let h = UInt32(parts[1]), let ppi = UInt32(parts[2]),
-              w > 0, h > 0, ppi > 0 else { return nil }
-        self.init(
-            name: "Virtual Screen",
-            width: w,
-            height: h,
-            logicalWidth: w,
-            logicalHeight: h,
-            ppi: ppi,
-            hiDPI: false
         )
     }
 }
