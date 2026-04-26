@@ -719,6 +719,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var displayCheckTimer: Timer?
     private var wakeObserver: Any?
 
+    // Pending disconnect confirmation — cancelled if monitor comes back within the window
+    private var disconnectDebounceTask: DispatchWorkItem?
+
     /// Default on: mitigates stuck/laggy cursor with mirrored virtual displays on Apple Silicon.
     private func cursorMirrorWorkaroundIsOn() -> Bool {
         if UserDefaults.standard.object(forKey: kCursorMirrorWorkaroundKey) == nil {
@@ -856,6 +859,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Case 1: HiDPI active but monitor disconnected
         if isActive && realMonitor == nil {
+            // Only act if the notification-based debounce isn't already handling this
+            guard disconnectDebounceTask == nil else { return }
             debugLog(">>> Periodic check: Physical monitor gone - cleaning up")
             wasDisconnected = true
             UserDefaults.standard.set(0, forKey: kMirrorFailureCountKey)  // Reset for reconnection
@@ -959,20 +964,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Case 1: HiDPI is active, check if physical monitor was disconnected
+        // Case 1: HiDPI is active, check if physical monitor was disconnected.
+        // Use a 3-second debounce: macOS fires this notification during brief link
+        // retrains (DisplayPort/HDMI renegotiation) where the monitor vanishes for
+        // 1-2 seconds and comes back on its own. Acting immediately causes an
+        // unnecessary app restart that breaks the menu and drops the virtual display.
         if isActive && currentVirtualID != 0 {
-            // Only check if the real physical monitor is still connected
-            // Don't check mirroring status - macOS can break mirroring unexpectedly
             let realMonitor = findRealPhysicalMonitor(verbose: true)
 
             if realMonitor == nil {
-                debugLog("Physical monitor disconnected (no real monitor found) - cleaning up")
-                wasDisconnected = true
-                UserDefaults.standard.set(0, forKey: kMirrorFailureCountKey)  // Reset for reconnection
-                cleanupAfterDisconnect()
-                return
+                // Only start a new debounce if one isn't already pending
+                guard disconnectDebounceTask == nil else { return }
+
+                debugLog("Physical monitor not found — waiting 3s to confirm real disconnect")
+                let task = DispatchWorkItem { [weak self] in
+                    guard let self = self else { return }
+                    self.disconnectDebounceTask = nil
+
+                    // Re-check: if monitor is back, this was just a link retrain — ignore it
+                    if self.findRealPhysicalMonitor() != nil {
+                        debugLog("Monitor came back within debounce window — not a real disconnect, ignoring")
+                        // Rebuild menu in case it went stale during the retrain
+                        self.rebuildMenu()
+                        return
+                    }
+
+                    debugLog("Physical monitor still gone after 3s — treating as real disconnect")
+                    self.wasDisconnected = true
+                    UserDefaults.standard.set(0, forKey: self.kMirrorFailureCountKey)
+                    self.cleanupAfterDisconnect()
+                }
+                disconnectDebounceTask = task
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: task)
             } else {
-                debugLog("Physical monitor still connected: \(realMonitor!)")
+                // Monitor is present — cancel any pending disconnect
+                if disconnectDebounceTask != nil {
+                    debugLog("Monitor back before debounce fired — cancelling disconnect")
+                    disconnectDebounceTask?.cancel()
+                    disconnectDebounceTask = nil
+                    rebuildMenu()
+                } else {
+                    debugLog("Physical monitor still connected: \(realMonitor!)")
+                }
             }
             return
         }
