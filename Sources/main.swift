@@ -35,7 +35,10 @@ struct DisplayPreset {
     // to prevent flicker from rate mismatch
 
     var isHiDPI: Bool {
-        return framebufferWidth == logicalWidth * 2
+        // HiDPI means the framebuffer is rendered at 2× the logical size in each axis.
+        // Allow a small tolerance because some presets use odd pixel counts.
+        return framebufferWidth >= logicalWidth * 2 &&
+               framebufferHeight >= logicalHeight * 2
     }
 }
 
@@ -58,6 +61,15 @@ let builtinPresets: [DisplayPreset] = [
         logicalWidth: 2560,
         logicalHeight: 1440,
         ppi: 218
+    ),
+    DisplayPreset(
+        name: "5k2k-hidpi",
+        description: "5K2K HiDPI for 5120x2160 monitors (looks like 2560x1080)",
+        framebufferWidth: 5120,
+        framebufferHeight: 2160,
+        logicalWidth: 2560,
+        logicalHeight: 1080,
+        ppi: 163
     ),
     DisplayPreset(
         name: "1440p-hidpi",
@@ -276,6 +288,8 @@ func mirrorDisplays(source: CGDirectDisplayID, target: CGDirectDisplayID) {
     print(colorize("Mirroring display \(source) to \(target)...", .cyan))
 
     if manager.mirrorDisplay(source, toDisplay: target) {
+        lastVirtualDisplayID = source
+        lastPhysicalDisplayID = target
         print(colorize("Mirror configured successfully!", .green))
         print("The physical display should now mirror the virtual output with HiDPI scaling.")
     } else {
@@ -307,11 +321,14 @@ func destroyAllDisplays() {
     print(colorize("All virtual displays destroyed.", .green))
 }
 
+// Tracks the last successfully mirrored virtual→physical pair for wake rebuilds
+var lastVirtualDisplayID: CGDirectDisplayID = CGDirectDisplayID(kCGNullDirectDisplay)
+var lastPhysicalDisplayID: CGDirectDisplayID = CGDirectDisplayID(kCGNullDirectDisplay)
+
 func keepAlive() {
     print(colorize("Keeping virtual displays alive...", .cyan))
     print("Press Ctrl+C to exit and destroy all virtual displays.\n")
 
-    // Set up signal handler
     signal(SIGINT) { _ in
         print(colorize("\n\nCleaning up...", .yellow))
         VirtualDisplayManager.shared().destroyAllVirtualDisplays()
@@ -319,7 +336,52 @@ func keepAlive() {
         exit(0)
     }
 
-    // Run the run loop
+    // Rebuild virtual display + mirror automatically after system wakes
+    NotificationCenter.default.addObserver(
+        forName: NSNotification.Name("VirtualDisplayNeedsRebuild"),
+        object: nil,
+        queue: .main
+    ) { notification in
+        guard let params = notification.userInfo as? [NSNumber: [String: Any]],
+              !params.isEmpty else {
+            return
+        }
+
+        print(colorize("\nSystem woke — rebuilding virtual display(s)...", .cyan))
+        let manager = VirtualDisplayManager.shared()
+        let refreshRate = detectExternalDisplayRefreshRate()
+
+        for (_, p) in params {
+            guard let width  = p["width"]  as? UInt32,
+                  let height = p["height"] as? UInt32,
+                  let ppi    = p["ppi"]    as? UInt32,
+                  let hiDPI  = p["hiDPI"]  as? Bool,
+                  let name   = p["name"]   as? String else { continue }
+
+            let newVirtualID = manager.createVirtualDisplay(
+                withWidth: width, height: height, ppi: ppi,
+                hiDPI: hiDPI, name: name, refreshRate: refreshRate
+            )
+            guard newVirtualID != kCGNullDirectDisplay else {
+                print(colorize("Failed to recreate virtual display after wake.", .red))
+                continue
+            }
+            print(colorize("Recreated virtual display \(newVirtualID).", .green))
+
+            // Re-mirror to the same physical display if we had one configured
+            if lastPhysicalDisplayID != CGDirectDisplayID(kCGNullDirectDisplay) {
+                if manager.mirrorDisplay(newVirtualID, toDisplay: lastPhysicalDisplayID) {
+                    lastVirtualDisplayID = newVirtualID
+                    print(colorize("Re-mirrored to display \(lastPhysicalDisplayID).", .green))
+                } else {
+                    print(colorize("Could not re-mirror — run: hidpi-virtual-display mirror \(newVirtualID) <physical-id>", .yellow))
+                }
+            } else {
+                print("No mirror target on record. Run: hidpi-virtual-display mirror \(newVirtualID) <physical-id>")
+            }
+        }
+    }
+
     RunLoop.main.run()
 }
 

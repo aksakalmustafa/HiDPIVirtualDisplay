@@ -920,14 +920,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // If the virtual display and its mirror are still alive after wake, do nothing.
+        // CGDisplayMirrorsDisplay returns the source it mirrors; non-zero means still active.
+        if isActive && currentVirtualID != 0 {
+            let mirrorSource = CGDisplayMirrorsDisplay(currentVirtualID)
+            if mirrorSource != kCGNullDirectDisplay {
+                debugLog("Wake: Virtual display \(currentVirtualID) still mirroring \(mirrorSource) — no rebuild needed")
+                return
+            }
+            debugLog("Wake: Virtual display exists but mirror is gone — will rebuild")
+        }
+
         // Fresh attempt after wake — reset failure counter
         UserDefaults.standard.set(0, forKey: kMirrorFailureCountKey)
         debugLog(">>> Wake: Restoring HiDPI preset after sleep: \(lastPreset)")
 
-        // Mark as setting up to prevent other handlers from interfering
         isSettingUp = true
 
-        // Reset current state - sleep/wake often breaks the virtual display mirroring
         let manager = VirtualDisplayManager.shared()
         manager.resetAllMirroring()
         manager.destroyAllVirtualDisplays()
@@ -1572,13 +1581,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    func addPresetItem(to menu: NSMenu, preset: String, title: String) {
-        let item = NSMenuItem(title: title, action: #selector(applyPreset(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = preset
-        menu.addItem(item)
-    }
-
     func addCustomScaleItem(to menu: NSMenu, nativeWidth: UInt32, nativeHeight: UInt32, ppi: UInt32) {
         menu.addItem(NSMenuItem.separator())
         let item = NSMenuItem(title: "Custom Scale...", action: #selector(showCustomScale(_:)), keyEquivalent: "")
@@ -1669,8 +1671,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hint.isEnabled = false
         menu.addItem(hint)
 
-        // Intentionally not 4/3: exact 3840 logical → 7680px framebuffer triggers macOS
-        // AirPlay / presentation-style mirroring; 1.3328 lands ~3841 wide and avoids that.
+        // Skip exact 4/3 (1.3333…): on a 5120-wide panel that gives logical 3840 →
+        // framebuffer 7680px, which macOS treats as an AirPlay/UltraHD mirror target
+        // and auto-activates Display Mirroring (menu bar icon appears).
+        // 1.3328 gives logical 3841, framebuffer 7682 — just outside the threshold.
         let scales: [Double] = [1.25, 1.30, 1.3328, 1.35, 1.40, 1.45, 1.50]
 
         var seenLogical = Set<UInt64>()
@@ -1687,7 +1691,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let title = "\(lw)×\(lh) (\(String(format: "%.2f", roundedScale))×)"
 
             let presetKey = PresetConfig.dynamicPresetKey(logicalWidth: lw, logicalHeight: lh, ppi: ppi)
-            addPresetItem(to: menu, preset: presetKey, title: title)
+            let item = NSMenuItem(title: title, action: #selector(applyPreset(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = presetKey
+            item.state = (isActive && currentPresetName == "\(lw)x\(lh)") ? .on : .off
+            menu.addItem(item)
         }
 
         addCustomScaleItem(to: menu, nativeWidth: nw, nativeHeight: nh, ppi: ppi)
@@ -2015,9 +2023,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func saveMonitorFingerprint(_ displayID: CGDirectDisplayID) {
         let vendor = Int(CGDisplayVendorNumber(displayID))
         let model = Int(CGDisplayModelNumber(displayID))
+        let size = CGDisplayScreenSize(displayID)
         UserDefaults.standard.set(vendor, forKey: kBoundMonitorVendorKey)
         UserDefaults.standard.set(model, forKey: kBoundMonitorModelKey)
-        debugLog("Saved monitor fingerprint: vendor=\(vendor), model=\(model)")
+        UserDefaults.standard.set(Int(size.width.rounded()), forKey: "boundMonitorWidthMm")
+        UserDefaults.standard.set(Int(size.height.rounded()), forKey: "boundMonitorHeightMm")
+        debugLog("Saved monitor fingerprint: vendor=\(vendor), model=\(model), size=\(Int(size.width))x\(Int(size.height))mm")
     }
 
     func connectedMonitorMatchesSavedPreset() -> Bool {
@@ -2025,19 +2036,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
 
-        let savedVendor = UserDefaults.standard.integer(forKey: kBoundMonitorVendorKey)
-        let savedModel = UserDefaults.standard.integer(forKey: kBoundMonitorModelKey)
-
         guard let displayID = findRealPhysicalMonitor() else { return false }
 
+        let savedVendor = UserDefaults.standard.integer(forKey: kBoundMonitorVendorKey)
+        let savedModel = UserDefaults.standard.integer(forKey: kBoundMonitorModelKey)
         let currentVendor = Int(CGDisplayVendorNumber(displayID))
         let currentModel = Int(CGDisplayModelNumber(displayID))
 
-        let matches = (currentVendor == savedVendor && currentModel == savedModel)
-        if !matches {
-            debugLog("Monitor mismatch: saved=(\(savedVendor),\(savedModel)) current=(\(currentVendor),\(currentModel)) — skipping auto-apply")
+        // Primary match: vendor + model (same port or port that reports stable IDs)
+        if currentVendor == savedVendor && currentModel == savedModel {
+            return true
         }
-        return matches
+
+        // Fallback: physical size match. Switching ports (Thunderbolt/USB-C/MST) can
+        // cause macOS to report a different model number for the same panel. Physical
+        // dimensions in mm come from the EDID and are stable across port changes.
+        let savedWidthMm = UserDefaults.standard.integer(forKey: "boundMonitorWidthMm")
+        let savedHeightMm = UserDefaults.standard.integer(forKey: "boundMonitorHeightMm")
+        if savedWidthMm > 0 && savedHeightMm > 0 {
+            let currentSize = CGDisplayScreenSize(displayID)
+            let currentWidthMm = Int(currentSize.width.rounded())
+            let currentHeightMm = Int(currentSize.height.rounded())
+            // Allow ±2mm tolerance for rounding differences between EDID reads
+            if abs(currentWidthMm - savedWidthMm) <= 2 && abs(currentHeightMm - savedHeightMm) <= 2 {
+                debugLog("Monitor matched by physical size: \(currentWidthMm)x\(currentHeightMm)mm (saved \(savedWidthMm)x\(savedHeightMm)mm)")
+                return true
+            }
+        }
+
+        debugLog("Monitor mismatch: saved=(\(savedVendor),\(savedModel)) current=(\(currentVendor),\(currentModel)) — skipping auto-apply")
+        return false
     }
 
     @objc func cleanUpDisplays() {

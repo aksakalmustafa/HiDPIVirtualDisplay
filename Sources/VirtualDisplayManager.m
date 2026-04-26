@@ -3,9 +3,14 @@
 
 #import "VirtualDisplayManager.h"
 #import "CGVirtualDisplayPrivate.h"
+#import <AppKit/AppKit.h>
 
 @interface VirtualDisplayManager ()
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, id> *virtualDisplays;
+// Keyed by virtual displayID -> physical displayID it is mirroring
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *mirrorMap;
+// Last creation params so we can rebuild after wake
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *createParamMap;
 @end
 
 @implementation VirtualDisplayManager
@@ -23,9 +28,82 @@
     self = [super init];
     if (self) {
         _virtualDisplays = [NSMutableDictionary dictionary];
+        _mirrorMap = [NSMutableDictionary dictionary];
+        _createParamMap = [NSMutableDictionary dictionary];
+
+        [[[NSWorkspace sharedWorkspace] notificationCenter] addObserver:self
+                                                             selector:@selector(handleSystemSleep:)
+                                                                 name:NSWorkspaceWillSleepNotification
+                                                               object:nil];
+
+        [[[NSWorkspace sharedWorkspace] notificationCenter] addObserver:self
+                                                             selector:@selector(handleSystemWake:)
+                                                                 name:NSWorkspaceDidWakeNotification
+                                                               object:nil];
     }
     return self;
 }
+
+- (void)dealloc {
+    [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
+}
+
+#pragma mark - Power State Handling
+
+- (void)handleSystemSleep:(NSNotification *)note {
+    NSLog(@"System going to sleep — unmirroring then destroying virtual displays.");
+
+    // Unmirror all before destroying so the physical display is left clean
+    for (NSNumber *virtualIDNum in self.mirrorMap.allKeys) {
+        CGDirectDisplayID virtualID = (CGDirectDisplayID)virtualIDNum.unsignedIntValue;
+        [self _stopMirroringForDisplay:virtualID commit:NO];
+    }
+    // Commit the unmirror changes in one pass
+    [self _commitUnmirrorAll];
+
+    [self.mirrorMap removeAllObjects];
+    [self.virtualDisplays removeAllObjects];
+}
+
+- (void)handleSystemWake:(NSNotification *)note {
+    NSLog(@"System waking up — rebuilding virtual displays.");
+
+    // Small delay so WindowServer finishes its own wake-up sequence
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"VirtualDisplayNeedsRebuild"
+                          object:self
+                        userInfo:[self.createParamMap copy]];
+    });
+}
+
+#pragma mark - Internal mirror helpers
+
+// Stage an unmirror for displayID without committing yet
+- (void)_stopMirroringForDisplay:(CGDirectDisplayID)displayID commit:(BOOL)commit {
+    CGDisplayConfigRef configRef;
+    if (CGBeginDisplayConfiguration(&configRef) != kCGErrorSuccess) return;
+    CGConfigureDisplayMirrorOfDisplay(configRef, displayID, kCGNullDirectDisplay);
+    if (commit) {
+        CGCompleteDisplayConfiguration(configRef, kCGConfigurePermanently);
+    } else {
+        CGCancelDisplayConfiguration(configRef);
+    }
+}
+
+// Unmirror everything that was staged via individual CGBeginDisplayConfiguration calls
+- (void)_commitUnmirrorAll {
+    CGDisplayConfigRef configRef;
+    if (CGBeginDisplayConfiguration(&configRef) != kCGErrorSuccess) return;
+    for (NSNumber *virtualIDNum in self.mirrorMap.allKeys) {
+        CGDirectDisplayID virtualID = (CGDirectDisplayID)virtualIDNum.unsignedIntValue;
+        CGConfigureDisplayMirrorOfDisplay(configRef, virtualID, kCGNullDirectDisplay);
+    }
+    CGCompleteDisplayConfiguration(configRef, kCGConfigurePermanently);
+}
+
+#pragma mark - Display Creation & Management
 
 - (CGDirectDisplayID)createVirtualDisplayWithWidth:(unsigned int)width
                                             height:(unsigned int)height
@@ -37,25 +115,22 @@
     NSLog(@"Creating virtual display: %ux%u @ %u PPI, HiDPI: %@, Refresh: %.0fHz",
           width, height, ppi, hiDPI ? @"YES" : @"NO", refreshRate);
 
-    // Create settings
     CGVirtualDisplaySettings *settings = [[CGVirtualDisplaySettings alloc] init];
     settings.hiDPI = hiDPI ? 1 : 0;
 
-    // Create descriptor
     CGVirtualDisplayDescriptor *descriptor = [[CGVirtualDisplayDescriptor alloc] init];
-    descriptor.queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
+    // Serial queue prevents CoreGraphics race conditions that crash WindowServer
+    descriptor.queue = dispatch_queue_create("com.hidpivirtualdisplay.renderqueue", DISPATCH_QUEUE_SERIAL);
     descriptor.name = name;
 
-    // Use exact sRGB IEC 61966-2.1 primaries so ColorSync can match
-    // an existing cached profile instead of generating a custom one.
-    // Custom primaries were causing colorsync.displayservices to deadlock
-    // against colorsyncd, which blocked WindowServer's render threads.
+    // Exact sRGB IEC 61966-2.1 primaries — lets ColorSync reuse a cached profile
+    // instead of generating a custom one (custom ones caused colorsync.displayservices
+    // to deadlock against colorsyncd, blocking WindowServer render threads)
     descriptor.whitePoint = CGPointMake(0.3127, 0.3290);   // D65
     descriptor.redPrimary = CGPointMake(0.6400, 0.3300);
     descriptor.greenPrimary = CGPointMake(0.3000, 0.6000);
     descriptor.bluePrimary = CGPointMake(0.1500, 0.0600);
 
-    // Calculate physical size in millimeters from pixels and PPI
     float widthInInches = (float)width / (float)ppi;
     float heightInInches = (float)height / (float)ppi;
     descriptor.sizeInMillimeters = CGSizeMake(widthInInches * 25.4f, heightInInches * 25.4f);
@@ -64,34 +139,26 @@
           descriptor.sizeInMillimeters.width,
           descriptor.sizeInMillimeters.height);
 
-    // Set maximum pixel dimensions (framebuffer size)
     descriptor.maxPixelsWide = width;
     descriptor.maxPixelsHigh = height;
 
-    // Vendor/Product/Serial - can be customized
-    descriptor.vendorID = 0x1234;  // Custom vendor
-    descriptor.productID = 0x5678; // Custom product
+    descriptor.vendorID = 0x1234;
+    descriptor.productID = 0x5678;
     descriptor.serialNum = 1;
 
-    // Termination handler
     descriptor.terminationHandler = ^(id display, id reason) {
         NSLog(@"Virtual display terminated: %@", reason);
     };
 
-    // Calculate mode dimensions
-    // For HiDPI, the mode width/height represent the "looks like" logical resolution
-    // The framebuffer is 2x this in each dimension
     unsigned int modeWidth = hiDPI ? width / 2 : width;
     unsigned int modeHeight = hiDPI ? height / 2 : height;
 
     NSLog(@"Mode resolution: %ux%u (logical), Framebuffer: %ux%u",
           modeWidth, modeHeight, width, height);
 
-    // Create the display mode
     CGVirtualDisplayMode *mode = [[CGVirtualDisplayMode alloc] initWithWidth:modeWidth
                                                                       height:modeHeight
                                                                  refreshRate:refreshRate];
-    // Add 60 Hz fallback mode for better compatibility
     NSMutableArray *modes = [NSMutableArray arrayWithObject:mode];
     if (refreshRate != 60.0) {
         CGVirtualDisplayMode *fallbackMode = [[CGVirtualDisplayMode alloc] initWithWidth:modeWidth
@@ -103,14 +170,12 @@
     }
     settings.modes = modes;
 
-    // Create the virtual display
     CGVirtualDisplay *display = [[CGVirtualDisplay alloc] initWithDescriptor:descriptor];
     if (!display) {
         NSLog(@"Failed to create virtual display");
         return kCGNullDirectDisplay;
     }
 
-    // Apply settings
     if (![display applySettings:settings]) {
         NSLog(@"Failed to apply settings to virtual display");
         return kCGNullDirectDisplay;
@@ -119,8 +184,17 @@
     CGDirectDisplayID displayID = display.displayID;
     NSLog(@"Created virtual display with ID: %u", displayID);
 
-    // Store reference to keep it alive
     self.virtualDisplays[@(displayID)] = display;
+
+    // Store params so wake handler can replay them
+    self.createParamMap[@(displayID)] = @{
+        @"width": @(width),
+        @"height": @(height),
+        @"ppi": @(ppi),
+        @"hiDPI": @(hiDPI),
+        @"name": name,
+        @"refreshRate": @(refreshRate)
+    };
 
     return displayID;
 }
@@ -137,7 +211,6 @@
         return NO;
     }
 
-    // Set target to mirror source
     err = CGConfigureDisplayMirrorOfDisplay(configRef, targetDisplayID, sourceDisplayID);
     if (err != kCGErrorSuccess) {
         NSLog(@"Failed to configure mirror: %d", err);
@@ -145,12 +218,15 @@
         return NO;
     }
 
-    // Apply the configuration
-    err = CGCompleteDisplayConfiguration(configRef, kCGConfigureForSession);
+    // kCGConfigurePermanently so the mirror survives sleep/wake within the session
+    err = CGCompleteDisplayConfiguration(configRef, kCGConfigurePermanently);
     if (err != kCGErrorSuccess) {
         NSLog(@"Failed to complete display configuration: %d", err);
         return NO;
     }
+
+    // Track which physical display this virtual display is mirroring
+    self.mirrorMap[@(sourceDisplayID)] = @(targetDisplayID);
 
     NSLog(@"Mirror configuration applied successfully");
     return YES;
@@ -166,7 +242,6 @@
         return NO;
     }
 
-    // Pass kCGNullDirectDisplay to stop mirroring
     err = CGConfigureDisplayMirrorOfDisplay(configRef, displayID, kCGNullDirectDisplay);
     if (err != kCGErrorSuccess) {
         NSLog(@"Failed to stop mirror: %d", err);
@@ -174,11 +249,13 @@
         return NO;
     }
 
-    err = CGCompleteDisplayConfiguration(configRef, kCGConfigureForSession);
+    err = CGCompleteDisplayConfiguration(configRef, kCGConfigurePermanently);
     if (err != kCGErrorSuccess) {
         NSLog(@"Failed to complete display configuration: %d", err);
         return NO;
     }
+
+    [self.mirrorMap removeObjectForKey:@(displayID)];
 
     NSLog(@"Mirror stopped successfully");
     return YES;
@@ -186,12 +263,16 @@
 
 - (void)destroyVirtualDisplay:(CGDirectDisplayID)displayID {
     NSLog(@"Destroying virtual display: %u", displayID);
+    [self.mirrorMap removeObjectForKey:@(displayID)];
+    [self.createParamMap removeObjectForKey:@(displayID)];
     [self.virtualDisplays removeObjectForKey:@(displayID)];
 }
 
 - (void)destroyAllVirtualDisplays {
     NSLog(@"Destroying all virtual displays (%lu total)",
           (unsigned long)self.virtualDisplays.count);
+    [self.mirrorMap removeAllObjects];
+    [self.createParamMap removeAllObjects];
     [self.virtualDisplays removeAllObjects];
 }
 
